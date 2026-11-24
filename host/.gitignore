@@ -1,0 +1,4 @@
+# The synthetic test samples are tracked although the repo ignores data/ elsewhere.
+!/tests/data/
+__pycache__/
+.pytest_cache/
