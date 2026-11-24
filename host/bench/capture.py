@@ -55,12 +55,24 @@ ONSET_K_SIGMA = 8.0
 ONSET_MIN_COUNTS = 6.0
 
 #: Accelerometer layout: corners, and the pairs that must match for a centre knock.
+#: Sensors 0..8 are the BMI160s I0..I8; in t06 sensor 9 is the table reference
+#: (the Discovery board's LSM6DSL, a different sensor type).
 SENSORS = 9
+TABLE_REFERENCE = 9
 CORNERS = (0, 2, 4, 6)
 SYMMETRY_PAIRS = ((1, 5), (3, 7))
 
 PIEZO_COLUMNS = ["knock", "sample", "t_us", "ch0", "ch1", "ch2", "ch3"]
 T07_COLUMNS = ["knock", "sensor", "sample", "x_mg", "y_mg", "z_mg"]
+T06_COLUMNS = ["sensor", "axis", "mean_mg", "rms_mg"]
+T06_AXES = ("x", "y", "z", "mag")
+
+#: Columns whose cells are words, not numbers.
+TEXT_COLUMNS = frozenset({"axis"})
+
+#: One CSV cell / one CSV row.
+Cell = float | str
+Row = list[Cell]
 
 # --------------------------------------------------------------------------
 # Parsing
@@ -70,6 +82,7 @@ _HEADER_RE = re.compile(r"^#\s*([A-Za-z]\w*)((?:,[A-Za-z_]\w*)+)\s*$")
 _END_RE = re.compile(r"^#\s*end\s*$")
 _KNOCK_NOTE_RE = re.compile(r"^knock\s+(\d+)\s+(\w+),(.*)$")
 _META_RE = re.compile(r"^meta\s+(.*)$")
+_WORD_RE = re.compile(r"^[A-Za-z_]\w*$")
 
 
 def _to_float(text: str) -> float:
@@ -82,13 +95,19 @@ class Run:
 
     name: str
     columns: list[str]
-    rows: list[list[float]] = field(default_factory=list)
+    rows: list[Row] = field(default_factory=list)
     comments: list[str] = field(default_factory=list)
     ended: bool = False
     bad_lines: int = 0
 
     def array(self) -> np.ndarray:
-        """All rows as a float array of shape (n, len(columns))."""
+        """All rows as a float array of shape (n, len(columns)).
+
+        Only for all-numeric streams; raises ValueError if the stream has a
+        text column (see TEXT_COLUMNS)."""
+        text = [c for c in self.columns if c in TEXT_COLUMNS]
+        if text:
+            raise ValueError(f"{self.name}: column {text[0]!r} is not numeric")
         if not self.rows:
             return np.empty((0, len(self.columns)))
         return np.asarray(self.rows, dtype=float)
@@ -136,7 +155,7 @@ class Event:
     kind: str
     run: Run | None = None
     text: str = ""
-    values: list[float] | None = None
+    values: Row | None = None
 
 
 class StreamParser:
@@ -179,17 +198,32 @@ class StreamParser:
         run = self.current
         if run is None:
             return Event("noise", None, text)
-        fields = text.split(",")
-        try:
-            values = [_to_float(f) for f in fields]
-        except ValueError:
-            values = None
-        if values is None or len(values) != len(run.columns):
+        values = _parse_row(text, run.columns)
+        if values is None:
             # Typically a line cut in half by a reset or a late attach.
             run.bad_lines += 1
             return Event("bad", run, text)
         run.rows.append(values)
         return Event("row", run, text, values)
+
+
+def _parse_row(text: str, columns: Sequence[str]) -> Row | None:
+    """Split one data line; None if it does not fit the columns."""
+    fields = [f.strip() for f in text.split(",")]
+    if len(fields) != len(columns):
+        return None
+    values: Row = []
+    for name, cell in zip(columns, fields):
+        if name in TEXT_COLUMNS:
+            if not _WORD_RE.match(cell):
+                return None
+            values.append(cell)
+            continue
+        try:
+            values.append(float(cell))
+        except ValueError:
+            return None
+    return values
 
 
 def parse_lines(lines: Iterable[str]) -> list[Run]:
@@ -211,9 +245,9 @@ def parse_file(path: Path | str) -> list[Run]:
 
 def split_knocks(run: Run) -> dict[int, np.ndarray]:
     """Rows grouped by the `knock` column, in order of first appearance."""
-    data = run.array()
-    if data.shape[0] == 0 or "knock" not in run.columns:
+    if not run.rows or "knock" not in run.columns:
         return {}
+    data = run.array()
     knock = data[:, run.columns.index("knock")].astype(int)
     return {int(k): data[knock == k] for k in dict.fromkeys(knock.tolist())}
 
@@ -244,15 +278,31 @@ class Analysis:
     plot: Callable[[Path, bool], list[Path]] | None = None
 
 
-def _fmt(value: float, spec: str = "8.1f") -> str:
-    if value is None or (isinstance(value, float) and math.isnan(value)):
-        return format("nan", ">" + re.sub(r"\..*", "", spec))
-    if isinstance(value, float) and math.isinf(value):
+def _fmt(value: float, spec: str = "8.1f", missing: str = "nan") -> str:
+    if math.isnan(value):
+        return format(missing, ">" + re.sub(r"\..*", "", spec))
+    if math.isinf(value):
         return format("inf", ">" + re.sub(r"\..*", "", spec))
     return format(value, spec)
 
 
-def table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
+def _column_means(m: np.ndarray) -> np.ndarray:
+    """Mean of each column ignoring NaN; NaN for a column without values."""
+    out = np.full(m.shape[1], np.nan)
+    for j in range(m.shape[1]):
+        col = m[:, j]
+        col = col[np.isfinite(col)]
+        if len(col):
+            out[j] = float(col.mean())
+    return out
+
+
+def _sensor_list(sensors: Iterable[int]) -> str:
+    return " ".join(f"I{s}" for s in sensors) or "none"
+
+
+def table(headers: Sequence[str], rows: Sequence[Sequence[object]]) -> str:
+    """Right-aligned text table; cells are shown with str()."""
     widths = [len(h) for h in headers]
     for row in rows:
         widths = [max(w, len(str(c))) for w, c in zip(widths, row)]
@@ -267,45 +317,92 @@ def table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
 # --------------------------------------------------------------------------
 
 
-def _axis_columns(run: Run) -> list[str]:
-    for candidate in (["x_mg", "y_mg", "z_mg"], ["x", "y", "z"]):
-        if run.has_columns(candidate):
-            return candidate
-    return []
+def _sensor_name(sensor: int) -> str:
+    return "table" if sensor == TABLE_REFERENCE else f"I{sensor}"
 
 
-def noise_rms(run: Run) -> dict[int, np.ndarray]:
-    """RMS deviation from the mean per sensor: {sensor: [rms_x, rms_y, rms_z]}."""
-    axes = _axis_columns(run)
-    if not axes or "sensor" not in run.columns:
+def noise_summary(run: Run) -> dict[int, dict[str, tuple[float, float]]]:
+    """The t06 summary rows as {sensor: {axis: (mean_mg, rms_mg)}}.
+
+    The firmware sends four rows per sensor (axis x, y, z, mag); for `mag` the
+    mean is the mean of |a| and the RMS is that of the dynamic magnitude. A
+    sensor that delivered no samples has no rows at all.
+    """
+    if run.columns != T06_COLUMNS:
         raise ValueError(
-            f"{run.name}: need a 'sensor' column and x/y/z (or x_mg/y_mg/z_mg); "
-            f"got {','.join(run.columns)}"
+            f"{run.name}: expected columns {','.join(T06_COLUMNS)}, got {','.join(run.columns)}"
         )
-    data = run.array()
-    sensor = data[:, run.columns.index("sensor")].astype(int)
-    idx = [run.columns.index(a) for a in axes]
-    return {
-        int(s): data[sensor == s][:, idx].std(axis=0) for s in sorted(set(sensor.tolist()))
+    summary: dict[int, dict[str, tuple[float, float]]] = {}
+    for sensor, axis, mean, rms in run.rows:
+        if isinstance(sensor, str) or isinstance(mean, str) or isinstance(rms, str):
+            continue
+        if axis not in T06_AXES:
+            raise ValueError(f"{run.name}: unknown axis {axis!r} (expected {'/'.join(T06_AXES)})")
+        summary.setdefault(int(sensor), {})[str(axis)] = (mean, rms)
+    return dict(sorted(summary.items()))
+
+
+#: A BMI160 whose dynamic RMS exceeds this multiple of the median is flagged.
+NOISY_FACTOR = 3.0
+
+
+def analyze_t06(run: Run) -> Analysis:
+    summary = noise_summary(run)
+    nan = (float("nan"), float("nan"))
+    rows = []
+    for sensor, axes in summary.items():
+        x, y, z, mag = (axes.get(a, nan) for a in T06_AXES)
+        rows.append(
+            [_sensor_name(sensor)]
+            + [_fmt(v[0], ".1f", "-") for v in (x, y, z)]
+            + [_fmt(v[1], ".2f", "-") for v in (x, y, z)]
+            + [_fmt(mag[0], ".1f", "-"), _fmt(mag[1], ".2f", "-"), _fmt(5 * mag[1], ".2f", "-")]
+        )
+    headers = ["sensor", "mean_x", "mean_y", "mean_z", "rms_x", "rms_y", "rms_z", "|a|", "dyn_rms", "5sigma"]
+    text = f"{run.name}: noise summary [mg] (5sigma = 5 x dynamic RMS)\n"
+    text += table(headers, rows) if rows else "(no sensor rows)"
+
+    # The BMI160s only: the table reference is another sensor type.
+    dynamic = {
+        s: axes["mag"][1]
+        for s, axes in summary.items()
+        if s < SENSORS and "mag" in axes and math.isfinite(axes["mag"][1])
     }
-
-
-def analyze_t06(run: Run, opts: Options) -> Analysis:
-    rms = noise_rms(run)
-    axes = _axis_columns(run)
-    unit = "mg" if axes[0].endswith("_mg") else "raw"
-    counts = {s: int((run.column("sensor").astype(int) == s).sum()) for s in rms}
-    rows = [
-        [f"I{s}", counts[s]] + [f"{v:.2f}" for v in r] + [f"{5 * float(r.max()):.2f}"]
-        for s, r in rms.items()
-    ]
-    text = (
-        f"{run.name}: RMS noise per sensor and axis [{unit}] "
-        f"(deviation from each axis mean)\n"
-        + table(["sensor", "samples", "rms_x", "rms_y", "rms_z", "5*sigma_max"], rows)
-        + "\nT6 asks for detection thresholds of at least 5 sigma (last column)."
-    )
-    return Analysis(text, {"rms": rms, "unit": unit}, lambda p, show: plot_t06(rms, unit, p, show))
+    missing = [s for s in range(SENSORS) if s not in dynamic]
+    data: dict = {"summary": summary, "dynamic_rms": dynamic, "missing": missing}
+    if dynamic:
+        median = float(np.median(list(dynamic.values())))
+        noisiest = max(dynamic, key=lambda s: dynamic[s])
+        threshold = 5 * dynamic[noisiest]
+        noisy = [s for s, v in dynamic.items() if v > NOISY_FACTOR * median]
+        data.update(median=median, noisiest=noisiest, threshold=threshold, noisy=noisy)
+        text += (
+            f"\nBMI160 (I0..I8): median dynamic RMS {median:.2f} mg over {len(dynamic)} sensor(s)"
+            f"\nsuggested trigger threshold: {threshold:.1f} mg "
+            f"(5 sigma of the noisiest BMI160, I{noisiest} at {dynamic[noisiest]:.2f} mg)"
+        )
+        if noisy:
+            text += (
+                f"\nWARNING: more than {NOISY_FACTOR:g} x the median: "
+                + ", ".join(f"I{s} ({dynamic[s]:.2f} mg)" for s in noisy)
+                + ": check mounting, cable strain and the module itself"
+            )
+        else:
+            text += f"\nno BMI160 above {NOISY_FACTOR:g} x the median"
+    else:
+        text += "\nno BMI160 rows: nothing to base a threshold on"
+    if missing:
+        text += f"\nMISSING BMI160 sensors (no rows = no samples): {_sensor_list(missing)}"
+    table_ref = summary.get(TABLE_REFERENCE, {}).get("mag")
+    if table_ref is not None:
+        data["table_reference"] = table_ref[1]
+        text += (
+            f"\ntable reference (LSM6DSL, not part of the median): "
+            f"dynamic RMS {table_ref[1]:.2f} mg, 5 sigma {5 * table_ref[1]:.2f} mg"
+        )
+    else:
+        text += "\ntable reference (sensor 9): no rows"
+    return Analysis(text, data, lambda p, show: plot_t06(dynamic, data.get("median"), p, show))
 
 
 # --------------------------------------------------------------------------
@@ -313,80 +410,145 @@ def analyze_t06(run: Run, opts: Options) -> Analysis:
 # --------------------------------------------------------------------------
 
 
-def knock_peaks(run: Run, pre_samples: int = 4) -> dict[int, np.ndarray]:
-    """Peak dynamic acceleration per sensor for every knock: {knock: A[9]}.
-
-    Uses the firmware's `# knock <n> peaks,...` lines when present. Otherwise
-    A_i = max_t |a_i(t) - g_i| with g_i the mean of the first `pre_samples`
-    samples of sensor i in that knock's window (the pre-trigger part).
-    """
-    noted = run.knock_notes("peaks")
-    if not run.has_columns(T07_COLUMNS):
-        if noted:
-            return {k: np.asarray(v, dtype=float) for k, v in noted.items()}
-        raise ValueError(f"{run.name}: expected columns {','.join(T07_COLUMNS)}")
-    peaks: dict[int, np.ndarray] = {}
-    ci = {c: run.columns.index(c) for c in T07_COLUMNS}
-    for knock, rows in split_knocks(run).items():
-        if knock in noted:
-            peaks[knock] = np.asarray(noted[knock], dtype=float)
+def _host_peaks(rows: np.ndarray, ci: dict[str, int], pre_samples: int) -> np.ndarray:
+    """A_i = max_t |a_i(t) - g_i| per sensor from the rows of one knock; NaN
+    for a sensor without rows. g_i is the mean of the pre-trigger samples
+    (sample < 0), or of the first `pre_samples` rows if there are none."""
+    a = np.full(SENSORS, np.nan)
+    sensors = rows[:, ci["sensor"]].astype(int)
+    for s in sorted(set(sensors.tolist())):
+        if not 0 <= s < SENSORS:
             continue
-        sensors = rows[:, ci["sensor"]].astype(int)
-        size = max(SENSORS, int(sensors.max()) + 1)
-        a = np.full(size, np.nan)
-        for s in sorted(set(sensors.tolist())):
-            block = rows[sensors == s]
-            block = block[np.argsort(block[:, ci["sample"]], kind="stable")]
-            xyz = block[:, [ci["x_mg"], ci["y_mg"], ci["z_mg"]]]
-            base = xyz[: max(1, min(pre_samples, len(xyz)))].mean(axis=0)
-            a[s] = float(np.linalg.norm(xyz - base, axis=1).max())
-        peaks[knock] = a
-    for knock, values in noted.items():
-        peaks.setdefault(knock, np.asarray(values, dtype=float))
-    return dict(sorted(peaks.items()))
+        block = rows[sensors == s]
+        block = block[np.argsort(block[:, ci["sample"]], kind="stable")]
+        xyz = block[:, [ci["x_mg"], ci["y_mg"], ci["z_mg"]]]
+        pre = xyz[block[:, ci["sample"]] < 0]
+        if len(pre) == 0:
+            pre = xyz[: max(1, min(pre_samples, len(xyz)))]
+        a[s] = float(np.linalg.norm(xyz - pre.mean(axis=0), axis=1).max())
+    return a
 
 
-def _peak_matrix(peaks: dict[int, np.ndarray]) -> np.ndarray:
-    if not peaks:
-        return np.empty((0, SENSORS))
-    width = max(len(v) for v in peaks.values())
-    out = np.full((len(peaks), width), np.nan)
-    for i, v in enumerate(peaks.values()):
-        out[i, : len(v)] = v
-    return out
+@dataclass
+class KnockPeaks:
+    """Peak dynamic acceleration per sensor for the knocks of a t07 run."""
+
+    #: {knock: A[9]} in mg; NaN where the sensor was absent for that knock.
+    peaks: dict[int, np.ndarray]
+    #: {knock: sensors absent in it}, only knocks with at least one.
+    absent: dict[int, list[int]]
+    #: Knocks dropped because their `# knock <n> peaks` line never arrived
+    #: (the capture was cut off in the middle of them).
+    incomplete: list[int]
+
+    def matrix(self) -> np.ndarray:
+        if not self.peaks:
+            return np.empty((0, SENSORS))
+        return np.vstack(list(self.peaks.values()))
+
+    def always_absent(self) -> list[int]:
+        m = self.matrix()
+        return [s for s in range(m.shape[1]) if m.shape[0] and not np.isfinite(m[:, s]).any()]
 
 
-def gain_stats(peaks: dict[int, np.ndarray], sensor: int) -> dict:
-    """Statistics of "knocks near sensor K"."""
-    m = _peak_matrix(peaks)
-    if m.shape[0] == 0 or sensor >= m.shape[1]:
-        raise ValueError(f"no peaks for sensor {sensor}")
+def knock_peaks(run: Run, pre_samples: int = 4) -> KnockPeaks:
+    """Collect the per-knock peaks of a t07 run.
+
+    The firmware's `# knock <n> peaks,<A0>,...,<A8>` line is used when present.
+    In it a sensor that was absent (or whose window could not be extracted) has
+    the value 0 and no sample rows; such an entry is not a measurement and
+    becomes NaN here. Once a file has peaks lines, a knock without one is an
+    incomplete tail (Ctrl-C in the middle of it) and is left out. A file
+    without any peaks line is evaluated from the rows alone.
+    """
+    if not run.has_columns(T07_COLUMNS):
+        raise ValueError(f"{run.name}: expected columns {','.join(T07_COLUMNS)}")
+    ci = {c: run.columns.index(c) for c in T07_COLUMNS}
+    noted = run.knock_notes("peaks")
+    by_knock = split_knocks(run)
+    result = KnockPeaks({}, {}, [])
+    for knock in sorted(set(by_knock) | set(noted)):
+        rows = by_knock.get(knock)
+        present = set(rows[:, ci["sensor"]].astype(int).tolist()) if rows is not None else set()
+        if knock in noted:
+            a = np.full(SENSORS, np.nan)
+            values = noted[knock][:SENSORS]
+            a[: len(values)] = values
+            a[[s for s in range(SENSORS) if a[s] == 0 and s not in present]] = np.nan
+        elif noted or rows is None:
+            result.incomplete.append(knock)
+            continue
+        else:
+            a = _host_peaks(rows, ci, pre_samples)
+        result.peaks[knock] = a
+        absent = [s for s in range(SENSORS) if not math.isfinite(a[s])]
+        if absent:
+            result.absent[knock] = absent
+    return result
+
+
+def gain_stats(peaks: KnockPeaks, sensor: int) -> dict:
+    """Statistics of "knocks near sensor K". Knocks in which a sensor was
+    absent do not count for that sensor."""
+    m = peaks.matrix()
+    if not 0 <= sensor < SENSORS:
+        raise ValueError(f"sensor must be 0..{SENSORS - 1}, got {sensor}")
     own = m[:, sensor]
-    mean = float(np.nanmean(own))
-    std = float(np.nanstd(own))
-    means = np.nanmean(m, axis=0)
+    own = own[np.isfinite(own)]
+    if len(own) == 0:
+        raise ValueError(f"sensor I{sensor} has no peaks (absent in every knock, or no knocks)")
+    mean = float(own.mean())
+    std = float(own.std())
+    means = _column_means(m)
     return {
         "sensor": sensor,
-        "knocks": int(m.shape[0]),
+        "knocks": int(len(own)),
+        "total_knocks": int(m.shape[0]),
         "mean": mean,
         "std": std,
         "cv": std / mean if mean else float("nan"),
         "means": means,
         "loudest": int(np.nanargmax(means)),
+        "absent": peaks.always_absent(),
     }
+
+
+def _absence_text(peaks: KnockPeaks) -> str:
+    """Describe absent sensors and dropped knocks ('' if there is nothing)."""
+    lines = []
+    always = peaks.always_absent()
+    if always:
+        lines.append(f"absent in every knock (no rows, peak 0): {_sensor_list(always)}")
+    for knock, sensors in peaks.absent.items():
+        some = [s for s in sensors if s not in always]
+        if some:
+            lines.append(f"absent in knock {knock}: {_sensor_list(some)}")
+    if always or len(lines) > 0:
+        lines.append("absent sensors are excluded from the statistics, not counted as 0")
+    if peaks.incomplete:
+        lines.append(
+            "incomplete knock(s) left out (no peaks line, capture cut off): "
+            + " ".join(str(k) for k in peaks.incomplete)
+        )
+    return "\n".join(lines)
 
 
 def analyze_t07(run: Run, opts: Options) -> Analysis:
     peaks = knock_peaks(run, opts.pre_samples)
-    m = _peak_matrix(peaks)
+    m = peaks.matrix()
     headers = ["knock"] + [f"I{i}" for i in range(m.shape[1])] + ["max at"]
     rows = [
-        [k] + [_fmt(float(v), ".0f") for v in a] + [f"I{int(np.nanargmax(a))}"]
-        for k, a in zip(peaks, m)
+        [k]
+        + [_fmt(float(v), ".0f", "-") for v in a]
+        + [f"I{int(np.nanargmax(a))}" if np.isfinite(a).any() else "-"]
+        for k, a in peaks.peaks.items()
     ]
-    text = f"{run.name}: peak dynamic acceleration per sensor [mg], {len(peaks)} knock(s)\n"
-    text += table(headers, rows) if rows else "(no knocks)"
-    data: dict = {"peaks": peaks}
+    text = f"{run.name}: peak dynamic acceleration per sensor [mg], {len(rows)} knock(s)\n"
+    text += table(headers, rows) if rows else "(no complete knocks)"
+    notes = _absence_text(peaks)
+    if notes:
+        text += "\n" + notes
+    data: dict = {"peaks": peaks.peaks, "absent": peaks.absent, "incomplete": peaks.incomplete}
     if opts.mode == "gain":
         if opts.sensor is None:
             raise ValueError("--mode gain needs --sensor K")
@@ -397,6 +559,8 @@ def analyze_t07(run: Run, opts: Options) -> Analysis:
             f"A_{g['sensor']} mean {g['mean']:.1f} mg, std {g['std']:.1f} mg, "
             f"CV {100 * g['cv']:.1f} %"
         )
+        if g["knocks"] != g["total_knocks"]:
+            text += f"\n  note: I{g['sensor']} was absent in {g['total_knocks'] - g['knocks']} knock(s)"
         if g["knocks"] != 20:
             text += f"\n  note: T7 asks for 20 knocks per sensor, this file has {g['knocks']}"
         if g["loudest"] != g["sensor"]:
@@ -404,13 +568,13 @@ def analyze_t07(run: Run, opts: Options) -> Analysis:
                 f"\n  WARNING: the largest mean response is on I{g['loudest']}, "
                 f"not I{g['sensor']}: wrong --sensor, wrong knock position, or swapped channels?"
             )
-        text += "\n  mean response of every sensor [mg]: " + " ".join(
-            f"I{i}={v:.0f}" for i, v in enumerate(g["means"])
+        text += "\n  mean response of the present sensors [mg]: " + " ".join(
+            f"I{i}={v:.0f}" for i, v in enumerate(g["means"]) if math.isfinite(v)
         )
     return Analysis(text, data, lambda p, show: plot_t07(m, opts.sensor, p, show))
 
 
-def solve_gains(responses: Sequence[float]) -> np.ndarray:
+def solve_gains(responses: Sequence[float] | np.ndarray) -> np.ndarray:
     """Gains c_i that equalise the responses R_i, normalised to mean 1.
 
     R_i is the mean peak of sensor i for knocks next to sensor i. After
@@ -432,6 +596,7 @@ def symmetry_report(values: np.ndarray, label: str) -> tuple[str, dict]:
         data[f"I{a}/I{b}"] = ratio
         lines.append(f"  {label} I{a}/I{b} = {ratio:.3f}")
     corners = values[list(CORNERS)]
+    # NaN (a sensor absent in every knock) propagates: no verdict without it.
     spread = float((corners.max() - corners.min()) / corners.mean())
     data["corner_spread"] = spread
     lines.append(
@@ -470,8 +635,9 @@ def analyze_gain_solve(
     text += "\nsymmetry of the gains themselves (1.000 = equal sensitivity):\n" + sym_text
     data = {"gains": gains, "responses": responses, "raw_spread": raw_spread, "gain_symmetry": sym}
     if center is not None:
-        m = _peak_matrix(knock_peaks(center, opts.pre_samples))
-        calibrated = np.nanmean(m, axis=0)[:SENSORS] * gains
+        center_peaks = knock_peaks(center, opts.pre_samples)
+        m = center_peaks.matrix()
+        calibrated = _column_means(m) * gains
         c_text, c_sym = symmetry_report(calibrated, "calibrated centre response")
         ok = (
             all(abs(c_sym[f"I{a}/I{b}"] - 1) < 0.10 for a, b in SYMMETRY_PAIRS)
@@ -481,6 +647,11 @@ def analyze_gain_solve(
             f"\ncentre knocks ({m.shape[0]}) after calibration:\n{c_text}\n"
             f"  T7 (spread < 10 %): {'PASS' if ok else 'FAIL'}"
         )
+        if center_peaks.always_absent():
+            text += (
+                f"\n  sensors absent in the centre file: {_sensor_list(center_peaks.always_absent())}"
+                " (their ratios show as nan and cannot pass)"
+            )
         data["center_symmetry"] = c_sym
         data["center_pass"] = ok
     return Analysis(text, data, lambda p, show: plot_gains(gains, p, show))
@@ -677,7 +848,7 @@ def analyze(run: Run, opts: Options) -> Analysis:
     if not run.rows and not run.comments:
         return Analysis(f"{run.name}: empty run")
     if run.name.startswith("t06"):
-        return analyze_t06(run, opts)
+        return analyze_t06(run)
     if run.name.startswith("t07"):
         return analyze_t07(run, opts)
     if run.name.startswith(("t09", "t10")):
@@ -695,14 +866,18 @@ def knock_summary(run: Run, knock: int, opts: Options) -> str:
         return f"{run.name} knock {knock}: no rows"
     if run.name.startswith("t07") and run.has_columns(T07_COLUMNS):
         single = Run(run.name, run.columns, rows.tolist(), run.comments)
-        a = knock_peaks(single, opts.pre_samples).get(knock)
-        if a is None:
-            return f"{run.name} knock {knock}: {len(rows)} rows"
-        return (
+        found = knock_peaks(single, opts.pre_samples)
+        a = found.peaks.get(knock)
+        if a is None or not np.isfinite(a).any():
+            return f"{run.name} knock {knock}: {len(rows)} rows, no peaks yet"
+        line = (
             f"{run.name} knock {knock}: peaks [mg] "
-            + " ".join(_fmt(float(v), ".0f") for v in a)
+            + " ".join(_fmt(float(v), ".0f", "-") for v in a)
             + f"  max at I{int(np.nanargmax(a))}"
         )
+        if knock in found.absent:
+            line += f"  absent: {_sensor_list(found.absent[knock])}"
+        return line
     if run.has_columns(PIEZO_COLUMNS):
         single = Run(run.name, run.columns, rows.tolist(), run.comments)
         k = piezo_knocks(single)[0]
@@ -807,18 +982,27 @@ def plot_piezo(
     return paths
 
 
-def plot_t06(rms: dict[int, np.ndarray], unit: str, csv_path: Path, show: bool) -> list[Path]:
+def plot_t06(
+    dynamic: dict[int, float], median: float | None, csv_path: Path, show: bool
+) -> list[Path]:
+    """Dynamic RMS of the BMI160s (one series, so no legend), median as a line."""
+    if not dynamic:
+        return []
     plt = _pyplot(show)
     fig, ax = plt.subplots(figsize=(8, 4), layout="constrained")
-    sensors = list(rms)
+    sensors = list(dynamic)
     x = np.arange(len(sensors))
-    for i, axis in enumerate("xyz"):
-        ax.bar(x + (i - 1) * 0.27, [rms[s][i] for s in sensors], width=0.24, color=SERIES[i], label=f"{axis} axis")
+    values = [dynamic[s] for s in sensors]
+    ax.bar(x, values, width=0.6, color=SERIES[0])
+    for xi, v in zip(x, values):
+        ax.annotate(f"{v:.2f}", (xi, v), xytext=(0, 3), textcoords="offset points", ha="center", color=INK_2, fontsize=8)
+    if median is not None:
+        ax.axhline(median, color=INK_2, linewidth=0.9, linestyle="--", label=f"median {median:.2f} mg")
+        ax.legend(loc="lower right", bbox_to_anchor=(1.0, 1.0), borderaxespad=0.2)
     ax.set_xticks(x, [f"I{s}" for s in sensors])
     ax.grid(axis="x", visible=False)
-    ax.set_ylabel(f"RMS noise [{unit}]")
-    ax.set_title("Noise floor per sensor and axis")
-    ax.legend(ncols=3, loc="lower right", bbox_to_anchor=(1.0, 1.0), borderaxespad=0.2)
+    ax.set_ylabel("dynamic RMS [mg]")
+    ax.set_title("Noise floor of the BMI160s (RMS of the dynamic magnitude)")
     return [_finish(plt, fig, csv_path.with_suffix(".png"), show)]
 
 
@@ -828,10 +1012,13 @@ def plot_t07(m: np.ndarray, sensor: int | None, csv_path: Path, show: bool) -> l
     plt = _pyplot(show)
     fig, ax = plt.subplots(figsize=(8, 4), layout="constrained")
     x = np.arange(m.shape[1])
-    mean, std = np.nanmean(m, axis=0), np.nanstd(m, axis=0)
-    ax.bar(x, mean, width=0.6, color=SERIES[0], yerr=std, ecolor=INK_2, capsize=3)
+    mean = _column_means(m)
+    std = np.array([float(np.std(c[np.isfinite(c)])) if np.isfinite(c).any() else 0.0 for c in m.T])
+    present = np.isfinite(mean)
+    ax.bar(x[present], mean[present], width=0.6, color=SERIES[0], yerr=std[present], ecolor=INK_2, capsize=3)
     for xi, v in zip(x, mean):
-        ax.annotate(f"{v:.0f}", (xi, v), xytext=(0, 3), textcoords="offset points", ha="center", color=INK_2, fontsize=8)
+        label, y = (f"{v:.0f}", v) if math.isfinite(v) else ("absent", 0.0)
+        ax.annotate(label, (xi, y), xytext=(0, 3), textcoords="offset points", ha="center", color=INK_2, fontsize=8)
     ax.set_xticks(x, [f"I{i}" for i in x])
     ax.grid(axis="x", visible=False)
     ax.set_ylabel("peak dynamic acceleration [mg]")
@@ -937,19 +1124,22 @@ class LiveSession:
     def feed_line(self, line: str) -> None:
         previous = self.parser.current
         event = self.parser.feed(line)
+        run = event.run
+        if run is None:
+            return  # noise outside any run
         if event.kind == "header":
             if previous is not None:
                 self._close(previous)  # a new stream started without '# end'
-            self._open(event.run)
+            self._open(run)
         if event.kind != "noise" and self.file is not None:
             self.file.write(line.rstrip("\r\n") + "\n")
-        if event.kind == "row" and "knock" in event.run.columns:
-            knock = int(event.values[event.run.columns.index("knock")])
-            if knock != self.pending_knock:
-                self._flush_knock(event.run)
-                self.pending_knock = knock
+        if event.kind == "row" and event.values is not None and "knock" in run.columns:
+            cell = event.values[run.columns.index("knock")]
+            if isinstance(cell, float) and int(cell) != self.pending_knock:
+                self._flush_knock(run)
+                self.pending_knock = int(cell)
         elif event.kind == "end":
-            self._close(event.run)
+            self._close(run)
 
     def idle(self) -> None:
         """Call when the line has been quiet: the current knock is complete."""

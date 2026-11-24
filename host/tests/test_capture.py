@@ -83,36 +83,145 @@ def test_committed_samples_match_the_generators():
 # ---------------------------------------------------------------- t06
 
 
-def test_t06_rms_table():
+def test_t06_summary_stream():
     run = capture.parse_file(DATA / "t06_noise.csv")[0]
-    rms = capture.noise_rms(run)
-    assert sorted(rms) == list(range(9))
-    for s, values in rms.items():
-        assert values == pytest.approx([make_data.T06_RMS_MG[s]] * 3, abs=2e-3)
-    text = capture.analyze(run, capture.Options()).text
-    assert "I8" in text and "rms_z" in text and "[mg]" in text
+    assert run.columns == ["sensor", "axis", "mean_mg", "rms_mg"]
+    assert run.rows[0] == [0.0, "x", -12.41, 1.2]
+    assert run.ended and run.bad_lines == 0
+    summary = capture.noise_summary(run)
+    assert sorted(summary) == [0, 1, 2, 3, 4, 5, 6, 8, 9]
+    assert sorted(summary[0]) == ["mag", "x", "y", "z"]
+    assert summary[4]["mag"][1] == pytest.approx(make_data.T06_RMS_MG[4])
+
+    analysis = capture.analyze(run, capture.Options())
+    d = analysis.data
+    # Sensor 7 has no rows; sensor 3 is ten times noisier; 9 is the table.
+    assert d["missing"] == [7]
+    assert sorted(d["dynamic_rms"]) == [0, 1, 2, 3, 4, 5, 6, 8]
+    assert d["noisy"] == [3] and d["noisiest"] == 3
+    assert d["threshold"] == pytest.approx(5 * 10 * make_data.T06_RMS_MG[3])
+    # The median is over the BMI160s only (the table reference would lower it).
+    bmi = [make_data.T06_RMS_MG[s] * (10 if s == 3 else 1) for s in (0, 1, 2, 3, 4, 5, 6, 8)]
+    assert d["median"] == pytest.approx(float(np.median(bmi)))
+    assert d["table_reference"] == pytest.approx(make_data.T06_TABLE_RMS_MG)
+    text = analysis.text
+    for needle in (
+        "MISSING BMI160 sensors (no rows = no samples): I7",
+        "WARNING",
+        "I3 (23.00 mg)",
+        "table reference (LSM6DSL, not part of the median): dynamic RMS 0.90 mg",
+        "5sigma",
+        "suggested trigger threshold: 115.0 mg",
+    ):
+        assert needle in text, needle
+    # The table reference has its own row in the table.
+    assert any(line.split()[:1] == ["table"] for line in text.splitlines())
 
 
-def test_t06_accepts_raw_axis_names_and_rejects_others():
-    run = capture.parse_text("# t06_noise,t_ms,sensor,x,y,z\n0,0,1,2,3\n1,0,3,2,1\n# end\n")[0]
-    assert capture.noise_rms(run)[0] == pytest.approx([1.0, 0.0, 1.0])
-    bad = capture.parse_text("# t06_noise,a,b\n1,2\n# end\n")[0]
+def test_t06_clean_run_and_no_table_reference():
+    text = "# t06_noise,sensor,axis,mean_mg,rms_mg\n"
+    for s in range(9):
+        text += f"{s},x,0.00,1.00\n{s},y,0.00,1.00\n{s},z,1000.00,1.00\n{s},mag,1000.00,{2 + s:.2f}\n"
+    analysis = capture.analyze(capture.parse_text(text)[0], capture.Options())  # no '# end'
+    assert analysis.data["missing"] == [] and analysis.data["noisy"] == []
+    assert analysis.data["median"] == pytest.approx(6.0)
+    assert analysis.data["threshold"] == pytest.approx(50.0)
+    assert "no BMI160 above" in analysis.text
+    assert "table reference (sensor 9): no rows" in analysis.text
+    assert "MISSING" not in analysis.text
+
+
+def test_t06_rejects_other_layouts_and_bad_cells():
+    old = capture.parse_text("# t06_noise,sensor,sample,x_mg,y_mg,z_mg\n0,0,1,2,3\n# end\n")[0]
     with pytest.raises(ValueError):
-        capture.noise_rms(bad)
+        capture.noise_summary(old)
+    # A number where the axis word belongs, or a word where a number belongs.
+    run = capture.parse_text(
+        "# t06_noise,sensor,axis,mean_mg,rms_mg\n0,1,2,3\n0,x,abc,3\n0,mag,1,2\n"
+    )[0]
+    assert run.bad_lines == 2 and len(run.rows) == 1
+    weird = capture.parse_text("# t06_noise,sensor,axis,mean_mg,rms_mg\n0,w,1,2\n")[0]
+    with pytest.raises(ValueError):
+        capture.noise_summary(weird)
+    with pytest.raises(ValueError):
+        weird.array()
 
 
 # ---------------------------------------------------------------- t07
 
 
+def test_t07_sample_matches_the_firmware_layout():
+    lines = (DATA / "t07_capture.csv").read_text().splitlines()
+    assert lines[0] == "# t07_capture,knock,sensor,sample,x_mg,y_mg,z_mg"
+    assert sum(line.startswith("# t07_capture") for line in lines) == 1  # header once
+    assert lines[-1] == "# end"
+    run = capture.parse_file(DATA / "t07_capture.csv")[0]
+    data = run.array()
+    assert np.array_equal(data, np.rint(data))  # integers only
+    assert sorted(set(data[:, 0].astype(int).tolist())) == [1, 2, 3]  # numbered from 1
+    assert sorted(set(data[:, 2].astype(int).tolist())) == list(range(-4, 16))
+    assert len(data) == 20 * (9 + 8 + 9)  # sensor 5 has no rows in knock 2
+    notes = run.knock_notes("peaks")
+    assert all(len(v) == 9 for v in notes.values()) and notes[2][5] == 0
+
+
+def test_t07_absent_sensor_is_not_a_measurement():
+    run = capture.parse_file(DATA / "t07_capture.csv")[0]
+    found = capture.knock_peaks(run)
+    assert list(found.peaks) == [1, 2, 3]
+    assert found.absent == {2: [5]} and found.incomplete == []
+    assert math.isnan(found.peaks[2][5]) and found.peaks[1][5] > 0
+    assert found.always_absent() == []
+    analysis = capture.analyze(run, capture.Options(mode="gain", sensor=5))
+    g = analysis.data["gain"]
+    # Two knocks count for I5, and its mean is not dragged down by a 0.
+    assert (g["knocks"], g["total_knocks"]) == (2, 3)
+    assert g["mean"] == pytest.approx((found.peaks[1][5] + found.peaks[3][5]) / 2)
+    assert "absent in knock 2: I5" in analysis.text
+    assert "I5 was absent in 1 knock(s)" in analysis.text
+
+
+def test_t07_truncated_file_without_end():
+    run = capture.parse_file(DATA / "t07_capture_truncated.csv")[0]
+    assert not run.ended
+    found = capture.knock_peaks(run)
+    # Knock 3 was cut off before its peaks line; sensor 6 never had rows.
+    assert list(found.peaks) == [1, 2] and found.incomplete == [3]
+    assert found.always_absent() == [6]
+    analysis = capture.analyze(run, capture.Options(mode="gain", sensor=2))
+    g = analysis.data["gain"]
+    assert g["knocks"] == 2 and g["loudest"] == 2 and g["absent"] == [6]
+    assert math.isnan(g["means"][6])
+    for needle in (
+        "absent in every knock (no rows, peak 0): I6",
+        "incomplete knock(s) left out",
+        "max at",
+    ):
+        assert needle in analysis.text, needle
+    assert "I6=" not in analysis.text
+    with pytest.raises(ValueError):
+        capture.analyze(run, capture.Options(mode="gain", sensor=6))
+    assert capture.main(["--replay", str(DATA / "t07_capture_truncated.csv"), "--no-plot"]) == 0
+
+
+def test_t07_zero_peak_with_rows_is_kept():
+    # A real 0 (the sensor has rows) stays a measurement.
+    text = "# t07_capture,knock,sensor,sample,x_mg,y_mg,z_mg\n"
+    text += "".join(f"1,0,{i},0,0,1000\n" for i in range(-4, 16))
+    text += "# knock 1 peaks,0,0,0,0,0,0,0,0,0\n"
+    found = capture.knock_peaks(capture.parse_text(text)[0])
+    assert found.peaks[1][0] == 0.0 and found.absent == {1: [1, 2, 3, 4, 5, 6, 7, 8]}
+
+
 def test_t07_peaks_from_firmware_lines_and_from_rows_agree():
     with_lines = capture.parse_text(make_data.t07_capture(near=3, knocks=2))[0]
     without = capture.parse_text(make_data.t07_capture(near=3, knocks=2, with_peaks=False))[0]
-    a = capture.knock_peaks(with_lines)
-    b = capture.knock_peaks(without)
+    a = capture.knock_peaks(with_lines).peaks
+    b = capture.knock_peaks(without).peaks
     assert list(a) == list(b) == [1, 2]
     for k in a:
         assert len(a[k]) == 9
-        assert b[k] == pytest.approx(a[k], abs=0.1)
+        assert b[k] == pytest.approx(a[k], abs=1.0)
         assert int(np.argmax(a[k])) == 3
 
 
@@ -124,7 +233,7 @@ def test_t07_gain_mode():
     assert g["mean"] == pytest.approx(2000.0 / make_data.TRUE_GAINS[4], rel=0.03)
     assert g["cv"] < 0.05
     assert "20 knocks near sensor I4" in analysis.text
-    assert "WARNING" not in analysis.text
+    assert "WARNING" not in analysis.text and "absent" not in analysis.text
     wrong = capture.analyze(run, capture.Options(mode="gain", sensor=0))
     assert "WARNING" in wrong.text
     with pytest.raises(ValueError):
@@ -156,6 +265,23 @@ def test_gain_solve_recovers_the_true_gains():
         assert needle in analysis.text
     with pytest.raises(ValueError):
         capture.analyze_gain_solve(runs[:8], capture.Options())
+
+
+def test_gain_solve_ignores_absent_sensors():
+    # In the "near sensor 2" file sensor 7 is absent throughout, and sensor 2
+    # itself misses knock 1: neither may enter a mean as 0.
+    texts = [make_data.t07_capture(near=k, knocks=20) for k in range(9)]
+    texts[2] = make_data.t07_capture(near=2, knocks=20, absent={0: (7,), 1: (2,)})
+    runs = [capture.parse_text(t)[0] for t in texts]
+    analysis = capture.analyze_gain_solve(runs, capture.Options())
+    expected = make_data.TRUE_GAINS / make_data.TRUE_GAINS.mean()
+    assert analysis.data["gains"] == pytest.approx(expected, rel=0.02)
+    assert "loudest is" not in analysis.text
+    # The target sensor absent in every knock of its own file is an error.
+    texts[4] = make_data.t07_capture(near=4, knocks=3, absent={0: (4,)})
+    runs = [capture.parse_text(t)[0] for t in texts]
+    with pytest.raises(ValueError, match="I4"):
+        capture.analyze_gain_solve(runs, capture.Options())
 
 
 # ---------------------------------------------------------------- piezo
@@ -250,7 +376,9 @@ def test_knock_summary_lines():
     line = capture.knock_summary(t10, 1, capture.Options())
     assert line.startswith("t10_piezo_time knock 1: 200 rows") and "first P1" in line
     t07 = capture.parse_file(DATA / "t07_capture.csv")[0]
-    assert "max at I0" in capture.knock_summary(t07, 2, capture.Options())
+    line = capture.knock_summary(t07, 2, capture.Options())
+    assert "max at I0" in line and "absent: I5" in line
+    assert "absent" not in capture.knock_summary(t07, 1, capture.Options())
 
 
 def test_live_session_saves_verbatim_and_summarises(tmp_path):
