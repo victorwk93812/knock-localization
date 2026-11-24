@@ -13,8 +13,10 @@ bench = false
 [features]
 # Run I2C1 (the BMI160 / TCA9548A bus) at 100 kHz instead of 400 kHz.
 i2c-100k = []
-# Shorten the long accelerometer bench tests (t03-t07, t13) to about 10 s for a smoke run.
+# Shorten the long-running tests (about 10 s) for a first smoke run.
 quick = []
+# t10_piezo_time: capture about 500 ms per knock (decimated) to measure ring-down.
+long-window = []
 
 [dependencies]
 knock-drivers = { workspace = true, features = ["defmt"] }

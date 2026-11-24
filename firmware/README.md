@@ -30,6 +30,10 @@ I2C1 runs at 400 kHz. To build for 100 kHz (the T3 fallback):
 cargo build --release --bins --features knock-bench/i2c-100k
 ```
 
+Other `knock-bench` features: `quick` shortens the long tests to about 10 s for
+a first smoke run; `long-window` switches `t10_piezo_time` to the 500 ms
+ring-down capture (T11).
+
 Flashing uses the runner in `.cargo/config.toml`
 (`cargo run --release --bin t00_board` → `probe-rs run --chip STM32L475VG`).
 Logs come back over RTT through defmt at `info` level (`DEFMT_LOG` in the same
@@ -39,7 +43,7 @@ file).
 
 | Binary | Test | Wiring | Checks |
 |---|---|---|---|
-| `t00_board` | board bring-up | Discovery kit only | LED2, VCP banner + echo (921600 8N1), LSM6DSL WHO_AM_I and gravity; I2C1 scan (informational) |
+| `t00_board` | board bring-up | Discovery kit only | LED2, VCP banner + echo (921600 8N1), LSM6DSL WHO_AM_I and gravity; I2C1 scan and A0..A3 levels (informational) |
 | `t01_chip_id` | T1 | one BMI160 module directly on I2C1 | address (SAO strap), CHIP_ID = 0xD1, configuration, 1 s of samples: mean, gravity 0.9–1.1 g, RMS noise. User button = next module (0–9); hold 2 s to finish |
 | `t02_mux_scan` | T2 | TCA9548A + I0..I7 + I8 | mux at 0x70, per-channel readback / scan / CHIP_ID, 0x68 absent with all channels off, I8 at 0x69 |
 | `t03_bus_soak` | T3 | full array | 1 000 000 transfers round-robin (mux select, CHIP_ID, 6 data bytes); per-sensor NACK / timeout / wrong-ID / other counters; pass = 0 errors. Also with `--features knock-bench/i2c-100k` |
@@ -52,6 +56,8 @@ file).
 `t03`–`t07` and `t13` take `--features knock-bench/quick`, which shortens them
 to about 10 s for a smoke run. They share `knock_bench::imu` (array bring-up
 and round-robin FIFO readout).
+| `t09_piezo_dc` | T9 | piezo front end on A0..A3 | 5 s idle: mean 2048 ± 150 counts, RMS < 8 counts, sample rate 100 kS/s ± 1 %. Then knocks until the button: min / max / peak, flat-top (clamp) and ADC-rail flags per channel, CSV of −1…+10 ms; all four channels must respond |
+| `t10_piezo_time` | T10, T11 | piezo front end on A0..A3 | per knock: onset time per channel (8 σ, skew-corrected), arrival order, Δt to the earliest, peaks; CSV of −1…+10 ms + `# knock <n> onsets_us,…`. With `--features knock-bench/long-window`: 500 ms peak-hold window and ring-down time per channel (`# knock <n> ringdown_us,…`) |
 
 Every test prints the same report over defmt and then idles blinking LED2:
 slowly (1 Hz) on PASS, fast (5 Hz) on FAIL.
@@ -85,6 +91,7 @@ mutex.
 | `rate` | `RateMeter` (frames/s from FIFO bursts), `expected_frames`, `within_percent`, `OverflowDetector` (FIFO level ≥ 1000 bytes or a readout gap longer than the FIFO holds). |
 | `running` | Streaming statistics: `Accum`, `AccelAccum` (mean, RMS, dynamic RMS without storing samples), `MinMaxMean`, `median`. |
 | `knock` | Knock capture: `SampleRing` (ring buffer with sample numbers and time anchor), `Baseline`, `Earliest`, `Refractory`, `extract_window`, `peak_dynamic`, `argmax`. |
+| `piezo` | Four interleaved 12-bit channels: `frames`, `channel`, `deinterleave`, `IdleStats`, `Trigger` (per-channel baseline + threshold), `Recorder` / `Window` (pre/post-trigger capture, optional peak-hold decimation), `onset` + `onset_time_us` (k·σ crossing, interpolated, scan-skew corrected), `arrival_order`, `extremes` (flat-top / rail), `envelope`, `ring_down`. |
 
 `init_accel_fifo` sets the project configuration: soft reset, accelerometer
 normal mode (gyroscope stays suspended), 400 Hz normal filter, ±16 g,
@@ -107,6 +114,7 @@ for sample in fifo::frames(&buf[..n]) {
 | `report` | `Report` (`begin`, `check`, `pass`, `fail`, `finish`), macros `check!` `pass!` `fail!` `note!` `row!`, `Verdict`, `idle_blink`, `CsvWriter`. |
 | `scan`, `drivers` | Re-exports of `knock_drivers::scan` and `knock_drivers`. |
 | `imu` | The nine-sensor array: `bring_up(&mut port)` → `ImuArray`; `drain_round`, `drain`, `init_sensor`, `probe`, `flush_all`, `park`; `probe_pin()` (Arduino D2 = PD14), `start_watchdog`, `take_watchdog_reset_flag`. The mux policy is documented at the top of `imu.rs`. |
+| `piezo` | `Piezo::new(board.piezo)`: ADC1 scanning A0..A3 into a circular DMA buffer at exactly 100 kS/s per channel (2.5 µs scan skew); `read_chunk`, `idle`, `settle`, `capture`, `write_window`; `read_levels` for a one-off blocking readout; `PiezoIrqs`. Rate and sampling-time derivation at the top of `piezo.rs`. |
 
 ### I2C1 and bus recovery
 
@@ -199,4 +207,8 @@ it can be tested on the host with `embedded-hal-mock`.
   gives no figure.
 - "Arduino D2 = PD14" (the logic-analyzer pin of `t04`) is from the Zephyr board
   files as remembered, not UM2153.
+- The ADC prescaler field (`ADC_CCR.PRESC`, set through the PAC) and the ADC
+  input figures behind the piezo sampling time are from memory of RM0351 and
+  the STM32L475 datasheet. `t09_piezo_dc` measures the delivered sample rate
+  and fails if the prescaler did not take effect.
 - Search the sources for `UNVERIFIED` for the exact places.

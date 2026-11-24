@@ -31,6 +31,7 @@
 //! - [`health`], [`rate`], [`running`], [`knock`]: bench-test logic for the
 //!   accelerometer array (error counters and outages, rate / FIFO overflow,
 //!   streaming statistics, knock trigger and window extraction).
+//! - [`piezo`]: piezo channel de-interleaving, trigger, window capture, onset and ring-down.
 
 #![cfg_attr(not(test), no_std)]
 #![warn(missing_docs)]
@@ -38,6 +39,7 @@
 pub mod bmi160;
 pub mod fifo;
 pub mod lsm6dsl;
+pub mod piezo;
 pub mod recovery;
 pub mod scan;
 pub mod stats;
