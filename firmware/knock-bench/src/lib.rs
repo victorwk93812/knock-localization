@@ -8,6 +8,7 @@
 //! - [`report`]: the common test-report shape (banner, PASS/FAIL lines,
 //!   RESULT line), the CSV line writer and the final LED idle loop.
 //! - [`scan`]: address probe and bus scan (re-exported from `knock-drivers`).
+//! - [`imu`]: the nine-sensor BMI160 array (bring-up, round-robin FIFO readout).
 //!
 //! The sensor drivers live in the HAL-independent `knock-drivers` crate,
 //! re-exported here as [`drivers`].
@@ -26,6 +27,8 @@ pub mod board;
 pub mod bus;
 pub mod recovery;
 pub mod report;
+
+pub mod imu;
 
 pub use knock_drivers as drivers;
 pub use knock_drivers::scan;
