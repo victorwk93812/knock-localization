@@ -28,6 +28,9 @@
 //! - [`stats`]: mean / RMS / peak / onset helpers (pure functions, no alloc).
 //! - [`recovery`]: pin-level I2C bus recovery (9 SCL pulses + STOP).
 //! - [`scan`]: address probing, bus scan and the [`scan::AddressSet`] result type.
+//! - [`health`], [`rate`], [`running`], [`knock`]: bench-test logic for the
+//!   accelerometer array (error counters and outages, rate / FIFO overflow,
+//!   streaming statistics, knock trigger and window extraction).
 
 #![cfg_attr(not(test), no_std)]
 #![warn(missing_docs)]
@@ -39,6 +42,11 @@ pub mod recovery;
 pub mod scan;
 pub mod stats;
 pub mod tca9548a;
+
+pub mod health;
+pub mod knock;
+pub mod rate;
+pub mod running;
 
 /// One raw accelerometer sample (sensor LSB, signed, as read from the device).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
