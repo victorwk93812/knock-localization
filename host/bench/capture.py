@@ -21,6 +21,9 @@ Usage (from host/):
 Each run is saved verbatim to <out>/<bin>-<timestamp>.csv. The analysis is
 printed and saved as PNG beside the CSV (--no-plot to skip, --show for windows).
 Start the script before resetting the board so the first header is not missed.
+The knock tests (t07, t09, t10) repeat their header before every knock, so a
+script started late still records the knocks that follow; t06 sends its header
+once.
 
 The file is organised as: parsing (pure) / analysis (pure, text + numbers) /
 plots / serial I/O / command line. Only the last two touch the outside world.
@@ -184,7 +187,8 @@ class StreamParser:
                 columns = m.group(2).lstrip(",").split(",")
                 run = self.current
                 if run is not None and run.name == name and run.columns == columns:
-                    # The piezo tests repeat the header before every knock.
+                    # The knock tests (t07, t09, t10) repeat the header
+                    # before every knock: still the same run, the same file.
                     return Event("reheader", run, text)
                 self.current = Run(name, columns)
                 self.runs.append(self.current)
@@ -344,6 +348,8 @@ def noise_summary(run: Run) -> dict[int, dict[str, tuple[float, float]]]:
 
 #: A BMI160 whose dynamic RMS exceeds this multiple of the median is flagged.
 NOISY_FACTOR = 3.0
+#: Suggested trigger threshold as a multiple of the median dynamic RMS.
+THRESHOLD_SIGMAS = 5.0
 
 
 def analyze_t06(run: Run) -> Analysis:
@@ -373,13 +379,26 @@ def analyze_t06(run: Run) -> Analysis:
     if dynamic:
         median = float(np.median(list(dynamic.values())))
         noisiest = max(dynamic, key=lambda s: dynamic[s])
-        threshold = 5 * dynamic[noisiest]
+        # The threshold describes the typical sensor (the median), so one
+        # badly mounted module does not inflate it; the noisiest sensor's own
+        # figure is shown beside it.
+        threshold = THRESHOLD_SIGMAS * median
+        threshold_noisiest = THRESHOLD_SIGMAS * dynamic[noisiest]
         noisy = [s for s, v in dynamic.items() if v > NOISY_FACTOR * median]
-        data.update(median=median, noisiest=noisiest, threshold=threshold, noisy=noisy)
+        data.update(
+            median=median,
+            noisiest=noisiest,
+            threshold=threshold,
+            threshold_noisiest=threshold_noisiest,
+            noisy=noisy,
+        )
         text += (
-            f"\nBMI160 (I0..I8): median dynamic RMS {median:.2f} mg over {len(dynamic)} sensor(s)"
+            f"\nBMI160 (I0..I8): median dynamic RMS {median:.2f} mg over {len(dynamic)} sensor(s); "
+            f"noisiest I{noisiest} at {dynamic[noisiest]:.2f} mg"
             f"\nsuggested trigger threshold: {threshold:.1f} mg "
-            f"(5 sigma of the noisiest BMI160, I{noisiest} at {dynamic[noisiest]:.2f} mg)"
+            f"({THRESHOLD_SIGMAS:g} x the median dynamic RMS)"
+            f"\nfor comparison, {THRESHOLD_SIGMAS:g} x the noisiest BMI160 (I{noisiest}) "
+            f"would be {threshold_noisiest:.1f} mg"
         )
         if noisy:
             text += (
@@ -456,8 +475,10 @@ def knock_peaks(run: Run, pre_samples: int = 4) -> KnockPeaks:
 
     The firmware's `# knock <n> peaks,<A0>,...,<A8>` line is used when present.
     In it a sensor that was absent (or whose window could not be extracted) has
-    the value 0 and no sample rows; such an entry is not a measurement and
-    becomes NaN here. Once a file has peaks lines, a knock without one is an
+    the value `nan` and no sample rows. Files recorded before the firmware
+    wrote `nan` have 0 there instead: a 0 for a sensor without sample rows is
+    not a measurement either and becomes NaN here, while a 0 for a sensor that
+    has rows is kept. Once a file has peaks lines, a knock without one is an
     incomplete tail (Ctrl-C in the middle of it) and is left out. A file
     without any peaks line is evaluated from the rows alone.
     """
@@ -474,6 +495,7 @@ def knock_peaks(run: Run, pre_samples: int = 4) -> KnockPeaks:
             a = np.full(SENSORS, np.nan)
             values = noted[knock][:SENSORS]
             a[: len(values)] = values
+            # Old files: 0 and no sample rows means absent.
             a[[s for s in range(SENSORS) if a[s] == 0 and s not in present]] = np.nan
         elif noted or rows is None:
             result.incomplete.append(knock)
@@ -518,7 +540,7 @@ def _absence_text(peaks: KnockPeaks) -> str:
     lines = []
     always = peaks.always_absent()
     if always:
-        lines.append(f"absent in every knock (no rows, peak 0): {_sensor_list(always)}")
+        lines.append(f"absent in every knock (no rows, no peak): {_sensor_list(always)}")
     for knock, sensors in peaks.absent.items():
         some = [s for s in sensors if s not in always]
         if some:

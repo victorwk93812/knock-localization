@@ -13,6 +13,7 @@
 //! | LED2 (green) | PB14, active high | LD2 |
 //! | User button (blue) | PC13, active low | B2 |
 //! | Piezo ADC inputs A0..A3 | PC5, PC4, PC3, PC2 | Arduino A0..A3 |
+//! | Spare pin (logic-analyzer probe of `t04`) | PD14 | Arduino D2 |
 //!
 //! Every alternate function and DMA request used here exists in the
 //! `stm32-metapac` tables for the STM32L475VG (otherwise this file would not
@@ -118,6 +119,15 @@ pub struct Board {
     pub button: ExtiInput<'static, Async>,
     /// ADC1 and the four piezo input pins, unconfigured.
     pub piezo: PiezoResources,
+    /// The spare pin, Arduino D2 = PD14, unconfigured (reset state). Turn it
+    /// into the logic-analyzer probe output with [`crate::imu::probe_pin`].
+    // UNVERIFIED: "Arduino D2 = PD14" is from the Zephyr board files for
+    // disco_l475_iot1 (arduino_r3_connector.dtsi) as remembered, not from
+    // UM2153, which is not in `references/`.
+    pub probe: Peri<'static, peripherals::PD14>,
+    /// The independent watchdog, not started. Start it with
+    /// [`crate::imu::start_watchdog`]; it cannot be stopped again.
+    pub iwdg: Peri<'static, peripherals::IWDG>,
 }
 
 /// ADC1 and the piezo input pins, left unconfigured for the piezo tests.
@@ -258,6 +268,8 @@ impl Board {
                 a2: p.PC3,
                 a3: p.PC2,
             },
+            probe: p.PD14,
+            iwdg: p.IWDG,
         }
     }
 }

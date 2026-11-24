@@ -105,6 +105,7 @@ async fn main(_spawner: Spawner) {
     let Board {
         i2c1: mut port,
         mut led2,
+        iwdg,
         ..
     } = Board::init();
     let watchdog_reset = imu::take_watchdog_reset_flag();
@@ -136,7 +137,7 @@ async fn main(_spawner: Spawner) {
     );
 
     // From here on the firmware must feed the watchdog, also while idling.
-    let mut watchdog = imu::start_watchdog(WATCHDOG_TIMEOUT);
+    let mut watchdog = imu::start_watchdog(iwdg, WATCHDOG_TIMEOUT);
 
     let started = Instant::now();
     let mut sensors = [SensorState::new(); SENSORS];

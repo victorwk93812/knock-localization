@@ -96,7 +96,8 @@ Date started: ________  Tested by: ________  Computer (OS): ________
 - [ ] 4 foam feet, about 2 cm in from each corner
 - [ ] t02 re-run on the assembled plate: all sensors still found
 - [ ] **T5 (t05), knocks, mounted:** hardest knock peak: ______ g on I__ (< 15.5)
-- [ ] **T6 (t06), mounted:** noise RMS typical ______ mg · trigger threshold (5σ): ______ mg
+- [ ] **T6 (t06), mounted:** median noise RMS ______ mg · suggested threshold
+      (5 × median): ______ mg · noisiest sensor would need: ______ mg (I__)
 - [ ] **T7 (t07):** 20 knocks per sensor recorded, 9 files + center file.
       Largest CV: ______ % · files: ______
 

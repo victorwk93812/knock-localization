@@ -89,9 +89,10 @@ async fn main(_spawner: Spawner) {
     let Board {
         i2c1: mut port,
         mut led2,
+        probe,
         ..
     } = Board::init();
-    let mut probe = imu::probe_pin();
+    let mut probe = imu::probe_pin(probe);
 
     let mut report = Report::begin("T04", "throughput");
     note!(

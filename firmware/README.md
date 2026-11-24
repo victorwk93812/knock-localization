@@ -49,8 +49,8 @@ file).
 | `t03_bus_soak` | T3 | full array | 1 000 000 transfers round-robin (mux select, CHIP_ID, 6 data bytes); per-sensor NACK / timeout / wrong-ID / other counters; pass = 0 errors. Also with `--features knock-bench/i2c-100k` |
 | `t04_throughput` | T4 (load for T14) | full array; logic analyzer on Arduino D2 (PD14) optional | drain all FIFOs every 20 ms for 10 min: loop time min/avg/max, max FIFO level, overflows, frames vs expected, I2C errors |
 | `t05_odr_sat` | T5 | full array on the plate | 10 s still: frames/s per sensor within 400 ± 2 %; then knock hard until the user button: peak \|a\| per sensor in g, any axis ≥ 15.5 g flagged |
-| `t06_noise` | T6 | full array on the plate + onboard LSM6DSL | 60 s still: mean / RMS per sensor and axis in mg, 5σ threshold suggestion, sensors > 3× median flagged; CSV summary |
-| `t07_capture` | T7, T8 | full array, or any subset (no mux: 0x68 and 0x69 on the trunk) | knock capture at 300 mg: −4…+15 samples per sensor as CSV, peak A_i per sensor; user button ends the run |
+| `t06_noise` | T6 | full array on the plate + onboard LSM6DSL | 60 s still: samples, mean / RMS per sensor and axis in mg; suggested trigger threshold = 5 × the median dynamic RMS, with the noisiest sensor's figure for comparison; sensors > 3× median flagged; CSV summary |
+| `t07_capture` | T7, T8 | full array, or any subset (no mux: 0x68 and 0x69 on the trunk) | knock capture at 300 mg: −4…+15 samples per sensor as CSV (header repeated before every knock), peak A_i per sensor (`nan` = absent); user button ends the run |
 | `t13_recovery` | T13 | full array | 30 min acquisition while sensors are unplugged / replugged: outage log, re-init, bus recovery, IWDG watchdog |
 
 `t03`–`t07` and `t13` take `--features knock-bench/quick`, which shortens them
@@ -108,12 +108,12 @@ for sample in fifo::frames(&buf[..n]) {
 
 | Module | Contents |
 |---|---|
-| `board` | `Board::init()` → `Board { i2c1, i2c2, vcp, led2, button, piezo }`; `Irqs`; `wait_for_press`; constants `I2C1_HZ`, `VCP_BAUD`, `SYSCLK_HZ`. Pin map, DMA channels and clock set-up are documented at the top of `board.rs`. |
+| `board` | `Board::init()` → `Board { i2c1, i2c2, vcp, led2, button, piezo, probe, iwdg }`; `Irqs`; `wait_for_press`; constants `I2C1_HZ`, `VCP_BAUD`, `SYSCLK_HZ`. Pin map, DMA channels and clock set-up are documented at the top of `board.rs`. |
 | `bus` | `TimeoutI2c::new(bus)`: wraps a bus so a hung transfer returns `BusError::Timeout` (200 ms by default). |
 | `recovery` | `recover_pins(scl, sda)`; normally reached through `I2c1Port::recover()`. |
 | `report` | `Report` (`begin`, `check`, `pass`, `fail`, `finish`), macros `check!` `pass!` `fail!` `note!` `row!`, `Verdict`, `idle_blink`, `CsvWriter`. |
 | `scan`, `drivers` | Re-exports of `knock_drivers::scan` and `knock_drivers`. |
-| `imu` | The nine-sensor array: `bring_up(&mut port)` → `ImuArray`; `drain_round`, `drain`, `init_sensor`, `probe`, `flush_all`, `park`; `probe_pin()` (Arduino D2 = PD14), `start_watchdog`, `take_watchdog_reset_flag`. The mux policy is documented at the top of `imu.rs`. |
+| `imu` | The nine-sensor array: `bring_up(&mut port)` → `ImuArray`; `drain_round`, `drain`, `init_sensor`, `probe`, `flush_all`, `park`; `probe_pin(board.probe)` (Arduino D2 = PD14), `start_watchdog(board.iwdg, timeout)`, `take_watchdog_reset_flag`. The mux policy is documented at the top of `imu.rs`. |
 | `piezo` | `Piezo::new(board.piezo)`: ADC1 scanning A0..A3 into a circular DMA buffer at exactly 100 kS/s per channel (2.5 µs scan skew); `read_chunk`, `idle`, `settle`, `capture`, `write_window`; `read_levels` for a one-off blocking readout; `PiezoIrqs`. Rate and sampling-time derivation at the top of `piezo.rs`. |
 
 ### I2C1 and bus recovery
@@ -159,6 +159,12 @@ csv.end().await?;
 
 produces `# t05,t_ms,sensor,x,y,z`, the data rows, then `# end`. Lines end in
 `\n` and are limited to 192 bytes.
+
+The knock tests (`t07`, `t09`, `t10`) send their header again before every
+knock, so a capture script attached in mid-run still records the knocks that
+follow. A repeated header continues the same run; it does not start a new one.
+In per-knock comment lines (`# knock <n> peaks,…`, `onsets_us`, `ringdown_us`)
+a value that does not exist is written as `nan`.
 
 ## Adding a test binary
 

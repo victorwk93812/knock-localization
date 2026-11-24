@@ -70,6 +70,7 @@ async fn main(spawner: Spawner) {
         mut led2,
         button: _,
         piezo: mut piezo_inputs,
+        ..
     } = Board::init();
 
     let mut report = Report::begin("T00", "board");

@@ -22,17 +22,27 @@
 //! the largest peak. CSV on the virtual COM port (921600 8N1):
 //!
 //! ```text
-//! # t07_capture,knock,sensor,sample,x_mg,y_mg,z_mg
+//! # t07_capture,knock,sensor,sample,x_mg,y_mg,z_mg     (once at start-up)
+//! # t07_capture,knock,sensor,sample,x_mg,y_mg,z_mg     (again before every knock)
 //! 1,0,-4,-12,3,1001
 //! ...                                  (20 rows per sensor, sensors in order)
 //! # knock 1 peaks,<A0>,<A1>,...,<A8>
+//! # t07_capture,knock,sensor,sample,x_mg,y_mg,z_mg
+//! 2,0,-4,-11,3,1000
+//! ...
+//! # knock 2 peaks,<A0>,<A1>,...,<A8>
 //! ...
 //! # end
 //! ```
 //!
+//! The header is repeated before every knock (as in the piezo tests), so a
+//! capture script attached in mid-run still records the knocks that follow.
+//! The repeats belong to the same run: one run, one file.
+//!
 //! Knocks are numbered from 1. `x_mg`…`z_mg` are the raw samples in mg
 //! (integers, gravity included); the peaks are integers in mg. A sensor that
-//! is absent has no sample rows and a peak of 0.
+//! is absent (or whose window could not be extracted) has no sample rows and
+//! the peak `nan`.
 //!
 //! **Knock as the test plan says; press the blue user button when done** (the
 //! `# end` line is only sent then). LED2 toggles on every captured knock.
@@ -55,7 +65,7 @@ use knock_bench::drivers::knock::{
 };
 use knock_bench::drivers::{Accel, bmi160};
 use knock_bench::imu::{self, ROUND_PERIOD, SENSORS};
-use knock_bench::report::{self, CsvWriter, Report};
+use knock_bench::report::{self, CSV_LINE_CAP, CsvWriter, Report};
 use knock_bench::{check, fail, note};
 
 /// Dynamic acceleration that triggers a capture, in mg.
@@ -75,6 +85,9 @@ const COLLECT_TIMEOUT: Duration = Duration::from_millis(200);
 const RING: usize = 128;
 /// Give up after this many bus recoveries: the bus is not usable.
 const MAX_RECOVERIES: u32 = 20;
+/// Name and columns of the CSV stream.
+const STREAM: &str = "t07_capture";
+const COLUMNS: [&str; 6] = ["knock", "sensor", "sample", "x_mg", "y_mg", "z_mg"];
 
 /// A triggered knock whose post-trigger samples are still arriving.
 struct Pending {
@@ -133,13 +146,9 @@ async fn main(_spawner: Spawner) {
     let mut recoveries = 0u32;
     let mut flushed = false;
 
-    let mut csv_ok = csv
-        .header(
-            "t07_capture",
-            &["knock", "sensor", "sample", "x_mg", "y_mg", "z_mg"],
-        )
-        .await
-        .is_ok();
+    // Sent once here so an attached script opens its file at once, and again
+    // before every knock for a script that attaches later.
+    let mut csv_ok = csv.header(STREAM, &COLUMNS).await.is_ok();
     note!("ready: knock; press the user button to finish");
 
     'run: loop {
@@ -261,7 +270,11 @@ async fn main(_spawner: Spawner) {
                                 ),
                             }
 
-                            // CSV: 20 rows per sensor, then the peaks line.
+                            // CSV: the header again, 20 rows per sensor, then
+                            // the peaks line.
+                            if csv_ok {
+                                csv_ok = csv.header(STREAM, &COLUMNS).await.is_ok();
+                            }
                             for k in (0..SENSORS).filter(|k| have[*k]) {
                                 for (i, s) in windows[k].iter().enumerate() {
                                     if !csv_ok {
@@ -282,14 +295,18 @@ async fn main(_spawner: Spawner) {
                                 }
                             }
                             if csv_ok {
-                                let p = peaks_mg;
-                                csv_ok = csv
-                                    .comment(format_args!(
-                                        "knock {} peaks,{:.0},{:.0},{:.0},{:.0},{:.0},{:.0},{:.0},{:.0},{:.0}",
-                                        knocks, p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8]
-                                    ))
-                                    .await
-                                    .is_ok();
+                                // `nan` marks a sensor without a window, so a
+                                // real reading of 0 mg stays distinguishable.
+                                let mut text: String<CSV_LINE_CAP> = String::new();
+                                let mut fits = write!(text, "knock {knocks} peaks").is_ok();
+                                for k in 0..SENSORS {
+                                    fits &= if have[k] {
+                                        write!(text, ",{:.0}", peaks_mg[k]).is_ok()
+                                    } else {
+                                        text.push_str(",nan").is_ok()
+                                    };
+                                }
+                                csv_ok = fits && csv.comment(format_args!("{text}")).await.is_ok();
                             }
                             pending = None;
                         }
