@@ -1,0 +1,13 @@
+# Rust build output (each workspace and worktree builds into its own target/)
+target/
+
+# Python environment of the host tools
+.venv/
+
+# Recorded datasets and logs
+data/
+
+# Agent working files
+.agent-briefs/
+.agent-summaries/
+.claude/worktrees/

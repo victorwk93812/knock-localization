@@ -1,0 +1,36 @@
+[package]
+name = "knock-bench"
+description = "Bench-test firmware for the knock-localization plate (B-L475E-IOT01A)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+test = false
+bench = false
+
+[features]
+# Run I2C1 (the BMI160 / TCA9548A bus) at 100 kHz instead of 400 kHz.
+i2c-100k = []
+
+[dependencies]
+knock-drivers = { workspace = true, features = ["defmt"] }
+
+embassy-stm32 = { workspace = true }
+embassy-executor = { workspace = true }
+embassy-time = { workspace = true }
+embassy-futures = { workspace = true }
+embassy-sync = { workspace = true }
+
+cortex-m = { workspace = true }
+cortex-m-rt = { workspace = true }
+
+defmt = { workspace = true }
+defmt-rtt = { workspace = true }
+panic-probe = { workspace = true }
+
+embedded-hal = { workspace = true }
+embedded-hal-async = { workspace = true }
+embedded-io-async = { workspace = true }
+heapless = { workspace = true }
