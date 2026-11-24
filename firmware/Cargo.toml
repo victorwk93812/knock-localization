@@ -1,0 +1,58 @@
+[workspace]
+resolver = "2"
+members = ["knock-drivers", "knock-bench"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+knock-drivers = { path = "knock-drivers" }
+
+embassy-stm32 = { version = "0.6.0", features = [
+    "stm32l475vg",
+    "time-driver-any",
+    "defmt",
+    "exti",
+    "memory-x",
+] }
+embassy-executor = { version = "0.10.0", features = [
+    "platform-cortex-m",
+    "executor-thread",
+    "defmt",
+] }
+embassy-time = { version = "0.5.1", features = ["defmt", "defmt-timestamp-uptime"] }
+embassy-futures = "0.1.2"
+embassy-sync = "0.8.0"
+
+cortex-m = { version = "0.7.7", features = ["critical-section-single-core"] }
+cortex-m-rt = "0.7.5"
+
+defmt = "1.0.1"
+defmt-rtt = "1.1.0"
+panic-probe = { version = "1.0.0", features = ["print-defmt"] }
+
+embedded-hal = "1.0.0"
+embedded-hal-async = "1.0.0"
+embedded-io-async = "0.7.0"
+heapless = "0.9.3"
+libm = "0.2.16"
+
+embedded-hal-mock = { version = "0.11.1", default-features = false, features = [
+    "eh1",
+    "embedded-hal-async",
+] }
+
+# defmt needs debug info in release builds to decode log frames on the host.
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+debug = 2
+overflow-checks = true
+
+[profile.dev]
+opt-level = 1
+debug = 2

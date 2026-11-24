@@ -1,0 +1,21 @@
+[package]
+name = "knock-drivers"
+description = "HAL-independent sensor drivers and signal helpers for the knock-localization bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+embedded-hal = { workspace = true }
+embedded-hal-async = { workspace = true }
+libm = { workspace = true }
+defmt = { workspace = true, optional = true }
+
+[features]
+# Derive `defmt::Format` on the public data and error types.
+defmt = ["dep:defmt"]
+
+[dev-dependencies]
+embedded-hal-mock = { workspace = true }
+embassy-futures = { workspace = true }
