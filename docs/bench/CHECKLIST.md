@@ -4,7 +4,7 @@ Procedures: [README.md](README.md) (setup), [materials.md](materials.md) (meter 
 soldering) and one page per test in [tests/](tests/). Tick a box only when the pass criterion is
 met; write the measured value where there's a blank.
 
-Date started: ________  Tested by: ________
+Date started: ________  Tested by: ________  Computer (OS): ________
 
 ---
 
@@ -14,7 +14,7 @@ Date started: ________  Tested by: ________
 - [ ] Multimeter continuity beeps, < 0.5 Ω
 - [ ] USB cable enumerates the ST-LINK (`0483:374b`)
 - [ ] Board 3V3 = ______ V (3.25–3.35) · 5V = ______ V
-- [ ] `probe-rs list` shows the probe; `/dev/ttyACM0` exists
+- [ ] `probe-rs list` shows the probe; serial port found: ______
 - [ ] `cargo build --release --bins` succeeds in `firmware/`; `uv run pytest` passes in `host/`
 
 ### Passive parts (materials §2)
