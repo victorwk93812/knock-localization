@@ -55,8 +55,8 @@
 //! `I2c1Port::recover` and build a new bus before continuing.
 
 use embassy_stm32::gpio::{Level, Output, Speed};
-use embassy_stm32::peripherals;
 use embassy_stm32::wdg::IndependentWatchdog;
+use embassy_stm32::{Peri, peripherals};
 use embassy_time::{Delay, Duration, Instant};
 use embedded_hal_async::i2c::I2c;
 use knock_drivers::bmi160::{self, Bmi160};
@@ -445,15 +445,8 @@ pub async fn bring_up(port: &mut I2c1Port) -> ImuArray {
 /// Logic-analyzer probe output on **Arduino D2 = PD14** (push-pull, initially
 /// low). The acquisition tests toggle it once per readout round.
 ///
-/// Call at most once, after `Board::init`.
-// UNVERIFIED: "Arduino D2 = PD14" is from the Zephyr board files for
-// disco_l475_iot1 (arduino_r3_connector.dtsi) as remembered, not from UM2153,
-// which is not in `references/`.
-pub fn probe_pin() -> Output<'static> {
-    // SAFETY: `Board::init` does not hand out PD14 and no other code in this
-    // firmware uses it, so this is the only handle as long as this function is
-    // called once.
-    let pin = unsafe { peripherals::PD14::steal() };
+/// Takes the spare pin handed out as `Board::probe`.
+pub fn probe_pin(pin: Peri<'static, peripherals::PD14>) -> Output<'static> {
     Output::new(pin, Level::Low, Speed::Low)
 }
 
@@ -461,12 +454,11 @@ pub fn probe_pin() -> Output<'static> {
 /// call `pet()` at least once per `timeout` for as long as the firmware runs,
 /// including while idling after the test.
 ///
-/// Call at most once, after `Board::init`.
-pub fn start_watchdog(timeout: Duration) -> IndependentWatchdog<'static, peripherals::IWDG> {
-    // SAFETY: `Board::init` does not hand out IWDG and no other code in this
-    // firmware uses it, so this is the only handle as long as this function is
-    // called once.
-    let iwdg = unsafe { peripherals::IWDG::steal() };
+/// Takes the watchdog handed out as `Board::iwdg`.
+pub fn start_watchdog(
+    iwdg: Peri<'static, peripherals::IWDG>,
+    timeout: Duration,
+) -> IndependentWatchdog<'static, peripherals::IWDG> {
     let timeout_us = u32::try_from(timeout.as_micros()).unwrap_or(u32::MAX);
     let mut watchdog = IndependentWatchdog::new(iwdg, timeout_us);
     watchdog.unleash();
