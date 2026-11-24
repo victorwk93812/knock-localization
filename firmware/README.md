@@ -42,6 +42,16 @@ file).
 | `t00_board` | board bring-up | Discovery kit only | LED2, VCP banner + echo (921600 8N1), LSM6DSL WHO_AM_I and gravity; I2C1 scan (informational) |
 | `t01_chip_id` | T1 | one BMI160 module directly on I2C1 | address (SAO strap), CHIP_ID = 0xD1, configuration, 1 s of samples: mean, gravity 0.9–1.1 g, RMS noise. User button = next module (0–9); hold 2 s to finish |
 | `t02_mux_scan` | T2 | TCA9548A + I0..I7 + I8 | mux at 0x70, per-channel readback / scan / CHIP_ID, 0x68 absent with all channels off, I8 at 0x69 |
+| `t03_bus_soak` | T3 | full array | 1 000 000 transfers round-robin (mux select, CHIP_ID, 6 data bytes); per-sensor NACK / timeout / wrong-ID / other counters; pass = 0 errors. Also with `--features knock-bench/i2c-100k` |
+| `t04_throughput` | T4 (load for T14) | full array; logic analyzer on Arduino D2 (PD14) optional | drain all FIFOs every 20 ms for 10 min: loop time min/avg/max, max FIFO level, overflows, frames vs expected, I2C errors |
+| `t05_odr_sat` | T5 | full array on the plate | 10 s still: frames/s per sensor within 400 ± 2 %; then knock hard until the user button: peak \|a\| per sensor in g, any axis ≥ 15.5 g flagged |
+| `t06_noise` | T6 | full array on the plate + onboard LSM6DSL | 60 s still: mean / RMS per sensor and axis in mg, 5σ threshold suggestion, sensors > 3× median flagged; CSV summary |
+| `t07_capture` | T7, T8 | full array, or any subset (no mux: 0x68 and 0x69 on the trunk) | knock capture at 300 mg: −4…+15 samples per sensor as CSV, peak A_i per sensor; user button ends the run |
+| `t13_recovery` | T13 | full array | 30 min acquisition while sensors are unplugged / replugged: outage log, re-init, bus recovery, IWDG watchdog |
+
+`t03`–`t07` and `t13` take `--features knock-bench/quick`, which shortens them
+to about 10 s for a smoke run. They share `knock_bench::imu` (array bring-up
+and round-robin FIFO readout).
 
 Every test prints the same report over defmt and then idles blinking LED2:
 slowly (1 Hz) on PASS, fast (5 Hz) on FAIL.
@@ -71,6 +81,10 @@ mutex.
 | `stats` | `mean`, `rms`, `std_dev`, `peak_abs`, `peak_abs_dev`, `magnitude`, `onset_index(samples, baseline_len, k_sigma)`; generic over `i16` and `f32` slices. |
 | `scan` | `probe(i2c, addr)`, `scan(i2c)` (0x08–0x77), `scan_range`; result type `AddressSet`. |
 | `recovery` | `recover_bus(scl, sda, delay, half_period_us)`: 9 SCL pulses + STOP on two open-drain pins; returns `BusState`. |
+| `health` | `ErrorClass`, `ErrorCounters` (per-sensor NACK / timeout / wrong-ID / other), `OutageTracker` (healthy ↔ down state machine), `GapTracker`. |
+| `rate` | `RateMeter` (frames/s from FIFO bursts), `expected_frames`, `within_percent`, `OverflowDetector` (FIFO level ≥ 1000 bytes or a readout gap longer than the FIFO holds). |
+| `running` | Streaming statistics: `Accum`, `AccelAccum` (mean, RMS, dynamic RMS without storing samples), `MinMaxMean`, `median`. |
+| `knock` | Knock capture: `SampleRing` (ring buffer with sample numbers and time anchor), `Baseline`, `Earliest`, `Refractory`, `extract_window`, `peak_dynamic`, `argmax`. |
 
 `init_accel_fifo` sets the project configuration: soft reset, accelerometer
 normal mode (gyroscope stays suspended), 400 Hz normal filter, ±16 g,
@@ -92,6 +106,7 @@ for sample in fifo::frames(&buf[..n]) {
 | `recovery` | `recover_pins(scl, sda)`; normally reached through `I2c1Port::recover()`. |
 | `report` | `Report` (`begin`, `check`, `pass`, `fail`, `finish`), macros `check!` `pass!` `fail!` `note!` `row!`, `Verdict`, `idle_blink`, `CsvWriter`. |
 | `scan`, `drivers` | Re-exports of `knock_drivers::scan` and `knock_drivers`. |
+| `imu` | The nine-sensor array: `bring_up(&mut port)` → `ImuArray`; `drain_round`, `drain`, `init_sensor`, `probe`, `flush_all`, `park`; `probe_pin()` (Arduino D2 = PD14), `start_watchdog`, `take_watchdog_reset_flag`. The mux policy is documented at the top of `imu.rs`. |
 
 ### I2C1 and bus recovery
 
@@ -182,4 +197,6 @@ it can be tested on the host with `embedded-hal-mock`.
   UM2153.
 - The BMI160 soft-reset wait (10 ms) is a conservative choice; the datasheet
   gives no figure.
+- "Arduino D2 = PD14" (the logic-analyzer pin of `t04`) is from the Zephyr board
+  files as remembered, not UM2153.
 - Search the sources for `UNVERIFIED` for the exact places.
