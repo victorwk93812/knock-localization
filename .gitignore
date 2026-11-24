@@ -11,3 +11,6 @@ data/
 .agent-briefs/
 .agent-summaries/
 .claude/worktrees/
+
+# Datasheets and manuals (copyrighted; kept locally)
+references/
