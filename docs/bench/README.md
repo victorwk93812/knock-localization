@@ -1,270 +1,274 @@
-# Bench test guide
+# Bench tests
 
-How to check every part and run every test in `Final_Proposal_v2_EN.md` §8.
-Tick things off in [CHECKLIST.md](CHECKLIST.md) as you go.
+How to check every part and run every test of `Final_Proposal_v2_EN.md` §8.
+This page gets a new tester from an empty laptop to the first passing test.
 
-Work in the order of the checklist and **add one thing at a time**. When a test
-fails, the fault is in the thing you just added.
+| Page | What it covers |
+|---|---|
+| this page | The hardware, installing the tools, how a test is run, the order of tests |
+| [materials.md](materials.md) | Checks with the multimeter only; soldering and preparing the modules and piezo discs |
+| [tests/](tests/) | One page per test binary: wiring, steps, expected output, pass criteria, faults |
+| [CHECKLIST.md](CHECKLIST.md) | Tick boxes and blanks for measured values, by milestone |
+| [STATUS.md](STATUS.md) | What has not been proven yet: first-guess thresholds, unverified values, known limits |
 
-> **Status of the firmware tests.** Nothing here has run on the board yet; the test
-> binaries are only known to compile. Expect to find firmware bugs as well as
-> hardware faults. When a test fails in a way this guide doesn't explain, paste the
-> terminal output to Claude.
+> **Nothing here has run on the board yet.** The test binaries compile and their
+> logic is unit-tested on a PC, nothing more. Expect to find firmware bugs as well
+> as hardware faults. When a test fails in a way its page doesn't explain, save the
+> terminal output and report it.
 
 ---
 
-## 1. One-time setup
+## 1. The hardware
 
-| Step | Command | Expect |
+```
+                          USB (power, flashing, logs, serial data)
+   laptop  ───────────────────────────────┐
+                                          │
+                        ┌─────────────────┴──────────────────┐
+                        │  B-L475E-IOT01A Discovery board    │
+                        │  STM32L475VG + ST-LINK + LSM6DSL   │
+                        └──┬─────────┬───────────────┬───────┘
+                 3V3, GND  │   D14 SDA, D15 SCL      │ A0 A1 A2 A3
+                           │         │               │
+   ┌───────────────────────┴─────────┴───────────────┴────────────────────┐
+   │ breadboard                                                           │
+   │   TCA9548A multiplexer (0x70)          piezo front end ×4 + VMID     │
+   └─────┬──────────────────────┬───────────────────┬─────────────────────┘
+         │ channels 0–7         │ trunk             │ 4 twisted pairs
+         │ 8 × 4 wires, 30 cm   │ 4 wires           │
+   ┌─────┴──────────────────────┴───────────────────┴─────────────────────┐
+   │ acrylic plate 30 × 20 cm, 2 mm, on four foam feet                    │
+   │   I0–I7 (BMI160, 0x68)   I8 (BMI160, 0x69)   P0–P3 (piezo discs)     │
+   └──────────────────────────────────────────────────────────────────────┘
+```
+
+| Part | Role | What to know |
 |---|---|---|
-| Toolchain | `rustup toolchain install` (in the repo) | 1.99.1 with `thumbv7em-none-eabihf` |
-| Probe | plug in the Discovery board, `probe-rs list` | one `STLink V2-1` probe |
-| Serial port | `ls /dev/ttyACM*` | `/dev/ttyACM0` |
-| Python tools | `cd host && uv sync` | venv created |
+| **B-L475E-IOT01A** Discovery board | Microcontroller (STM32L475VG) and built-in ST-LINK programmer | One micro-USB cable gives power, flashing, the log and a serial port. Green LED2 and the blue button are used by the tests; the black button is reset |
+| **GY-BMI160** modules, 9 + 1 spare | Accelerometers I0–I8 glued to the plate | Talk I2C. Two possible addresses, set by the SAO pin: 0x68 (I0–I7) or 0x69 (I8). Run at 400 samples/s, ±16 g |
+| **TCA9548A** multiplexer module | Lets eight sensors with the same address share one bus | Address 0x70. Writing bit *k* connects channel *k* to the bus |
+| **Piezo discs** Φ27 mm, 4 + 2 spare | Fast vibration sensors P0–P3 | Produce a voltage when the plate flexes. Sampled at 100 000 samples/s each on A0–A3 |
+| **Piezo front end** (resistors, capacitors, 1N4148 diodes) | Shifts the piezo signal to mid-supply and limits it to what the ADC pin tolerates | Built on the breadboard; circuit in [tests/t09_piezo_dc.md](tests/t09_piezo_dc.md) |
+| **LSM6DSL** (on the Discovery board) | Table reference: sees vibration of the table, not the plate | Nothing to wire |
+| Acrylic plate | The sensing surface | 2 mm acrylic cracks: never drill it, knock with a fingertip or knuckle |
 
-On this machine the probe-rs udev rules are installed and your user is in the `uucp`
-group, so no `sudo` is needed.
+**Names used in every page**
 
-**Running a test**
+- **D14 / D15**: the Arduino-header pins carrying I2C1 SDA / SCL. **A0–A3**: the
+  analog inputs. **3V3 / GND**: the power pins on the same headers. All are
+  printed on the board's silk screen next to the sockets.
+- **Trunk**: the D14/D15 pair before the multiplexer. The multiplexer and I8
+  both sit on it.
+- **Channel *k***: the multiplexer's `SDk` / `SCk` pair, wired to sensor I*k*.
+- **I0–I8**: sensors by position on the plate (proposal §2). **Module 0–9**: the
+  number you tape on each module. Module *k* becomes sensor I*k*; module 9 is
+  the spare.
+- **LED2**: the green LED. **User button**: blue. **Reset**: black.
+
+---
+
+## 2. Installing the tools
+
+Written for Linux. Where macOS or Windows differ it is noted, but those notes are
+untested.
+
+### 2.1 Get the repository
+
+```sh
+git clone https://github.com/victorwk93812/knock-localization.git
+cd knock-localization
+```
+
+### 2.2 Rust
+
+1. Install `rustup` from <https://rustup.rs> (or your distribution's `rustup`
+   package). Do not install a distribution `rust` or `cargo` package beside it.
+2. In the repository:
+
+   ```sh
+   rustup toolchain install
+   ```
+
+   This reads `rust-toolchain.toml` and installs exactly Rust 1.99.1 together with
+   the `thumbv7em-none-eabihf` target (the compiler back end for the STM32's
+   Cortex-M4F). Nothing else needs to be chosen; never edit that file.
+3. Check: `cd firmware && cargo build --release --bins` finishes without errors.
+   The first build downloads the dependencies and takes a few minutes.
+
+No separate ARM GCC, OpenOCD or ST software is needed.
+
+### 2.3 probe-rs (flashing and logs)
+
+`probe-rs` talks to the ST-LINK on the board: it flashes the program and prints
+its log. The project is developed with **probe-rs 0.32**.
+
+1. Install it by one of the methods on
+   <https://probe.rs/docs/getting-started/installation/> (prebuilt installer, or
+   `cargo install probe-rs-tools --locked`).
+2. **Linux only: allow access without `sudo`.** Follow "udev rules" on
+   <https://probe.rs/docs/getting-started/probe-setup/>: copy `69-probe-rs.rules`
+   to `/etc/udev/rules.d/`, then
+
+   ```sh
+   sudo udevadm control --reload && sudo udevadm trigger
+   ```
+
+   and replug the board.
+3. Check, with the board plugged in:
+
+   ```sh
+   probe-rs list
+   ```
+
+   must show one `STLink V2-1` probe.
+
+Windows: if the probe is not listed, install ST's ST-LINK USB driver.
+
+### 2.4 Serial port
+
+The same USB cable also provides a serial port (the "virtual COM port"), used for
+the recorded data.
+
+| System | Port name | Permission |
+|---|---|---|
+| Linux | `/dev/ttyACM0` | Your user must be in the group that owns the port: `ls -l /dev/ttyACM0` shows it (`uucp` on Arch, `dialout` on Debian/Ubuntu). `sudo usermod -aG <group> $USER`, then log out and in |
+| macOS | `/dev/cu.usbmodem…` | none |
+| Windows | `COM3` or similar (Device Manager) | none |
+
+The pages use `/dev/ttyACM0`; substitute yours.
+
+### 2.5 Python tools
+
+The analysis script needs Python 3.11 or newer with pyserial, numpy and
+matplotlib. [uv](https://docs.astral.sh/uv/) installs all of that into a private
+environment:
+
+1. Install uv (<https://docs.astral.sh/uv/getting-started/installation/>).
+2. In the repository:
+
+   ```sh
+   cd host
+   uv sync
+   ```
+3. Check: `uv run bench/capture.py --help` prints the options, and
+   `uv run pytest` reports all tests passed.
+
+### 2.6 First contact
+
+Plug in only the Discovery board and run the board self-check:
 
 ```sh
 cd firmware
-cargo run --release --bin t02_mux_scan
+cargo run --release --bin t00_board
 ```
 
-This builds, flashes and then prints the test's log in the same terminal. Every test
-prints a banner, one `PASS`/`FAIL` line per check, and ends with
-`RESULT: PASS` or `RESULT: FAIL (n failed)`. LED2 then blinks slowly for a pass and
-fast for a fail. Stop with Ctrl-C. Press the black reset button to run it again.
+Details and expected output: [tests/t00_board.md](tests/t00_board.md). If this
+passes, the installation is complete.
 
-**Tests that record waveforms** also send CSV over the serial port. Start the
-capture script in a second terminal *before* knocking:
+---
+
+## 3. How every test works
+
+**Run** from `firmware/`:
 
 ```sh
-cd host
-uv run bench/capture.py --port /dev/ttyACM0 --out ../data/bench/
+cargo run --release --bin <name>
 ```
 
-It saves one file per run and shows a plot.
+This builds the test, flashes it, and prints its log in the same terminal until
+you press Ctrl-C. The program keeps running on the board after Ctrl-C. To run the
+same test again, run the command again (or press the black reset button; the log
+then only shows if `cargo run` is still attached).
 
-**Multimeter habits**
+**The log** has the same shape in every test:
 
-- Probe tips are enough. For a female Dupont socket, push a male header pin in and
-  probe the pin.
-- For current, the meter goes in series, red lead in the mA jack. **Move the lead
-  back to V/Ω afterwards.** Probing a supply with the lead in the mA jack shorts it.
+```text
+=== T02 mux scan ===
+PASS: mux answers at 0x70
+FAIL: ch3: nothing at 0x68: check this channel's SDA/SCL/power ...
+INFO: verdict: failing channels: 3
+RESULT: FAIL (1 failed)
+```
 
----
+`PASS` / `FAIL` lines are checks, `INFO` lines are measurements to write down, and
+the last line is the verdict. After it, **LED2 blinks slowly (1 Hz) for a pass and
+fast (5 Hz) for a fail**, so the result is visible without the terminal.
 
-## 2. Material checks (no firmware)
+**Options** are cargo features, written after the binary name:
 
-Do these with the multimeter, power off, parts out of circuit.
-
-### 2.1 Tools
-
-| Item | Test | Pass |
+| Option | Effect | Tests |
 |---|---|---|
-| Multimeter | Continuity mode, touch probes together | Beep, < 0.5 Ω |
-| USB cable | Plug in the board, `lsusb` | `0483:374b ST-LINK/V2.1`. Only an LED and no device = charge-only cable |
-| Board power | DC volts, Arduino header 3V3–GND and 5V–GND | 3.25–3.35 V, ≈ 5 V |
+| `--features knock-bench/quick` | Shortens the test to about 10 s. Use it for a first smoke run of each long test | t03–t07, t09, t10, t13 |
+| `--features knock-bench/i2c-100k` | Sensor bus at 100 kHz, not 400 kHz | fallback for t03; t04 and t13 are then expected to fail (the bus is too slow to keep up) |
+| `--features knock-bench/long-window` | 500 ms capture per knock | t10 only (this is test T11) |
 
-### 2.2 Passive parts
+**Tests that record data** (t06, t07, t09, t10) also send it over the serial port.
+Use two terminals, in this order:
 
-| Part | How | Pass |
+```sh
+# terminal 1, first:
+cd host
+uv run bench/capture.py --port /dev/ttyACM0 --out ../data/bench
+
+# terminal 2, second:
+cd firmware
+cargo run --release --bin t07_capture
+```
+
+**Start the capture script first.** Flashing restarts the board, and the data
+header is sent right after the restart; a script started later may save nothing
+(always true for t07, see [STATUS.md](STATUS.md)). The script saves each run as
+`<test>-<timestamp>.csv`, prints a summary, and writes plots as PNG beside it. Stop
+it with Ctrl-C. A saved file can be analysed again any time:
+
+```sh
+uv run bench/capture.py --replay ../data/bench/<file>.csv
+```
+
+`data/` is git-ignored. Write the file name next to the checklist line.
+
+**Only one program can use the serial port at a time**, and only one can use the
+probe. Close other serial monitors and IDE debug sessions.
+
+---
+
+## 4. Order of work
+
+Add one thing at a time. When a test fails, the fault is in the thing just added.
+
+| Step | Page | Needs |
 |---|---|---|
-| Resistors 10 kΩ, 100 kΩ, 1 MΩ | Ω mode. Don't hold both leads of the 1 MΩ: your fingers read in parallel | Within ±1 % (metal film) |
-| 100 nF (`104`), 1 nF (`102`) | Capacitance mode; zero the meter with open leads first | 100 nF within ±20 %. 1 nF is hard to read on cheap meters; the printed code is enough |
-| 10 µF electrolytic | Capacitance mode. Stripe = **negative** lead | 8–12 µF |
-| 1N4148 diodes | Diode mode. Red on the plain end, black on the banded end; then swap | **0.55–0.70 V** forward, `OL` reversed. ≈ 0.2–0.3 V would be a Schottky: wrong part |
-| Piezo discs (after soldering leads) | Ω: open (> 10 MΩ). Capacitance: roughly 10–30 nF. DC volts: tap it, reading jumps. Tug each lead gently | All four true. ≈ 0 Ω or ≈ 0 nF = cracked or shorted disc |
+| 1 | [materials.md](materials.md) §1–§3 | multimeter; parts loose |
+| 2 | [t00_board](tests/t00_board.md) | Discovery board only |
+| 3 | [materials.md](materials.md) §4: solder and strap the modules | soldering iron |
+| 4 | [t01_chip_id](tests/t01_chip_id.md) (T1) | one module at a time, 4 wires |
+| 5 | [t02_mux_scan](tests/t02_mux_scan.md) (T2) | multiplexer + 9 modules on the breadboard |
+| 6 | [t03_bus_soak](tests/t03_bus_soak.md) (T3) | same, with the final 30 cm wires |
+| 7 | [t04_throughput](tests/t04_throughput.md) (T4, T14) | same |
+| 8 | [t05_odr_sat](tests/t05_odr_sat.md) (T5) | same; rate check now, knock check after mounting |
+| 9 | [t06_noise](tests/t06_noise.md) (T6) | same; repeat after mounting |
+| 10 | [materials.md](materials.md) §5: solder the piezo leads; [t09_piezo_dc](tests/t09_piezo_dc.md) (T9) | piezo front end on the breadboard |
+| 11 | [t07_capture](tests/t07_capture.md) as T8 | two modules on an acrylic offcut |
+| 12 | Glue everything to the plate (proposal §3.4), re-run t02 and t06 | |
+| 13 | [t07_capture](tests/t07_capture.md) as T7 | assembled plate |
+| 14 | [t10_piezo_time](tests/t10_piezo_time.md) (T10, T11) | assembled plate |
+| 15 | [t13_recovery](tests/t13_recovery.md) (T13) | assembled plate |
 
-### 2.3 Wires and breadboard
+Steps 1–10 are milestone M1, 11–14 are M2, 15 belongs to the rehearsal (M6).
 
-- **Every Dupont wire:** continuity end to end (< 1 Ω), then bend the wire next to
-  each crimp while the meter beeps. A stutter means a bad crimp: bin it.
-- **Female ends:** push onto a header pin. A loose socket causes random I2C errors
-  later (T3, T13). Bin it.
-- **Breadboard:** each 5-hole row conducts; neighboring rows don't. Check the power
-  rails end to end; bridge them if they're split in the middle.
-
-### 2.4 GY-BMI160 module preparation (all 10)
-
-1. **Read the chip marking** with a phone macro photo. Note anything that isn't a
-   BMI160.
-2. **Short check:** Ω between VIN and GND, and 3V3 and GND. Must not be ≈ 0.
-3. **Pull-ups:** Ω from SDA to 3V3 and from SCL to 3V3. Write the value down; it
-   helps diagnose T3. Each mux channel sees only its own module's pull-ups, and
-   the trunk sees those of module 8 plus the mux board's.
-4. **Straps, on the module:**
-   - **CS → 3V3.** Without it the chip can start in SPI mode and never answer.
-   - **SAO → GND** on modules 0–7 (address 0x68). **SAO → 3V3** on module 8 (0x69).
-   - Module 9 is the spare: strap it like 0–7.
-5. **Header:** solder from the component side and trim the tails flush underneath
-   so the PCB sits flat on the acrylic. Or solder four wires directly.
-6. **Supply:** the module has a small regulator between VIN and 3V3. Power it from
-   the board's 3.3 V, then measure the module's **3V3 pin**. If it reads below
-   ≈ 3.0 V when fed through VIN, feed the 3V3 pin directly instead.
-7. **Label** each module 0–9 with tape.
+**T12 (latency and false triggers)** has no test binary: it needs the real
+acquisition firmware and the avatar. Method when those exist: film the knock and
+the screen with a phone at 240 frames/s and count frames (about 4 ms each); count
+triggers over 10 minutes idle, 10 minutes with someone typing on the table, and
+with deliberate table bumps.
 
 ---
 
-## 3. Firmware tests
+## 5. Multimeter habits
 
-Wiring names: D14 = SDA, D15 = SCL (Arduino header, I2C1). "Trunk" means those two
-lines before the multiplexer.
-
-### t00 — board self-check
-
-- **Purpose:** prove the board, probe, serial port and onboard sensor work before
-  anything is attached.
-- **Wiring:** USB only.
-- **Run:** `cargo run --release --bin t00_board`. In a second terminal open the
-  serial port (`uv run bench/capture.py --port /dev/ttyACM0 --echo`) and type: the
-  characters should come back.
-- **Pass:** LED2 blinks; LSM6DSL answers `0x6A`; |a| between 0.8 and 1.2 g; serial
-  echo is clean at 921 600 baud.
-- **If it fails:** no probe → cable or udev; garbled echo → note it, we lower the
-  baud rate.
-
-### t01 — T1: incoming module check (one module at a time)
-
-- **Purpose:** every BMI160 answers, has the right ID and address, and reads 1 g.
-- **Wiring (no multiplexer):**
-
-  ```
-  module VIN (or 3V3) ── 3V3        module SCL ── D15
-  module GND ─────────── GND        module SDA ── D14
-  CS and SAO already strapped on the module (§2.4)
-  ```
-- **Run:** `cargo run --release --bin t01_chip_id`. Lay the module flat. After each
-  result, swap in the next module and press the **blue user button**.
-- **Also measure once per module:** supply current, meter in series in the 3V3
-  wire. Expect about 1 mA or less (accelerometer only), plus any power LED.
-- **Pass (per module):** address `0x68` (modules 0–7, 9) or `0x69` (module 8);
-  `CHIP_ID = 0xD1`; |a| within 0.9–1.1 g with z ≈ ±1 g and x, y ≈ 0.
-- **If it fails:**
-  - nothing found → CS strap, power, SDA/SCL swapped, bad wire;
-  - wrong address → SAO strap;
-  - wrong ID → different chip, set the module aside;
-  - |a| far from 1 g → damaged sensor.
-
-### t02 — T2: multiplexer and I8
-
-- **Purpose:** each mux channel reaches exactly one sensor, and I8 is visible
-  beside the mux.
-- **Wiring:** TCA9548A VCC/GND to the rails, its SDA/SCL to D14/D15. Module k to
-  channel k (SDk/SCk) for k = 0…7. Module 8 (0x69) to the **trunk**, in parallel
-  with the mux. Before powering, check with the meter that the mux's A0–A2 read low
-  and RESET reads high (through the module's own resistors).
-- **Run:** `cargo run --release --bin t02_mux_scan`. Tip: first run it with only
-  the mux and one known-good module, moving that module through channels 0–7.
-- **Pass:** mux at `0x70`; every channel shows `0x68` with `CHIP_ID 0xD1`; `0x69`
-  and `0x70` visible on every channel; with all channels off, `0x68` is absent.
-- **If it fails:** one dead channel → that wire or that module; `0x68` visible with
-  all channels off → a 0x68 module is on the trunk by mistake; readback wrong →
-  mux RESET floating or mux not powered.
-
-### t03 — T3: bus integrity soak
-
-- **Purpose:** the I2C bus is error-free with all nine sensors on 30 cm wires.
-- **Wiring:** as t02, with the final 30 cm wires.
-- **Run:** `cargo run --release --bin t03_bus_soak` and leave it about 30 minutes.
-  Wiggle nothing. If you have the logic analyzer, look at SCL/SDA edges on the
-  trunk and on one channel.
-- **Pass:** 10⁶ reads, 0 errors on every sensor.
-- **If it fails:** errors on one sensor → its wires; errors everywhere → pull-ups.
-  Too weak (slow, rounded rising edges): add 4.7 kΩ to 3V3 on the trunk. Too
-  strong (low level doesn't reach near 0 V): the trunk has too many in parallel.
-  Fallback: `cargo run --release --features i2c-100k --bin t03_bus_soak`.
-
-### t04 — T4 and T14: throughput and power
-
-- **Purpose:** the firmware can drain nine FIFOs at 400 Hz without falling behind,
-  and the 3.3 V rail carries the full load.
-- **Run:** `cargo run --release --bin t04_throughput`, 10 minutes.
-- **T14, while it runs:** meter in series between the board's 3V3 pin and the
-  breadboard rail. Write down the current.
-- **Pass:** no FIFO overflow; worst loop time under the 20 ms period; current a few
-  tens of mA at most.
-
-### t05 — T5: sample rate and saturation
-
-- **Run:** `cargo run --release --bin t05_odr_sat`. First leave it still (rate
-  check), then give the hardest knock you'd ever use right beside a module.
-- **Pass:** each sensor reports 400 ± 2 % samples/s; knock peaks stay under 15.5 g.
-- **If it saturates:** knock softer in the dataset, or note it for the report.
-
-### t06 — T6: noise floor
-
-- **Run:** start the capture script, then `cargo run --release --bin t06_noise`.
-  Don't touch the table for 60 s.
-- **Pass:** it prints RMS per sensor and a suggested 5σ trigger threshold. Record
-  them. A sensor several times noisier than the rest is suspect.
-- **Repeat** after the plate is assembled (M2); the mounted numbers are the ones
-  the firmware will use.
-
-### t07 — T7 and T8: knock capture (gain calibration, mounting comparison)
-
-- **Run:** start the capture script with `--mode gain`, then
-  `cargo run --release --bin t07_capture`.
-- **T8 (before final assembly, on an offcut):** mount one module with
-  cyanoacrylate and one with thin tape, the same distance from a marked knock
-  point. 20 knocks. Pick the mounting with the higher and more repeatable peak.
-- **T7 (assembled plate):** for each sensor, 20 medium knocks 2 cm from it, toward
-  the plate center. The script computes gain c_i for each sensor. Then 20 knocks at
-  the center for the symmetry check.
-- **Pass:** after calibration, I1 ≈ I5, I3 ≈ I7 and the four corners agree within
-  10 %. I1 ≠ I3 is expected: the plate is rectangular.
-
-### t09 — T9: piezo front end
-
-**Before connecting A0–A3, two checks:**
-
-1. **Pin voltage limit.** The 1N4148 clamps let the pin reach about 3.95 V on a
-   hard knock. Confirm in the STM32L475 datasheet (absolute maximum ratings, input
-   voltage on pins in analog mode) that this is allowed. If it isn't, use 22 kΩ in
-   series with 470 pF, or add a capacitor across each piezo, before going further.
-2. **Meter checks, power on, A0–A3 not yet connected:**
-   - VMID = 1.65 ± 0.05 V.
-   - Each ADCj node reads about **1.5 V** on a 10 MΩ meter. That is the meter
-     loading the 1 MΩ path, not a fault.
-   - Power off, diode mode, in circuit: each clamp points the right way (band
-     toward 3.3 V on the upper diode, band toward ADCj on the lower one).
-
-- **Run:** capture script, then `cargo run --release --bin t09_piezo_dc`. Leave it
-  idle 10 s, tap each disc in turn, then give one hard knock.
-- **Pass:** idle ≈ 2048 counts on all four channels with low noise; each channel
-  responds to its own disc; on the hard knock the waveform flat-tops at the clamp
-  level and the board keeps running.
-
-### t10 — T10 and T11: piezo timing and ring-down
-
-- **Run:** capture script, then `cargo run --release --bin t10_piezo_time`.
-  - Knock directly beside P0, then P1, P2, P3.
-  - Knock at the plate center, 10 times.
-  - For T11, run with `--features long-window` and knock a few times anywhere.
-- **Pass:** the nearest piezo fires first every time; center knocks give arrival
-  times within about 0.1 ms of each other; the script prints an estimate of
-  v_eff. For T11, read off the time for the tail to fall below the trigger
-  threshold: that sets the refractory period (expected around 300 ms).
-
-### t13 — T13: soak and recovery
-
-- **Run:** `cargo run --release --bin t13_recovery`, 30 minutes. During the run,
-  unplug one sensor's SDA wire, wait 5 s, plug it back. Repeat with a power wire.
-- **Pass:** the log reports the sensor lost, the bus recovery, and the sensor
-  back; other sensors keep reporting; the firmware never hangs.
-
-### T12 — latency and false triggers (later)
-
-Needs the real acquisition firmware and the avatar, so there is no test binary yet.
-Method when ready: film the knock and the screen with a phone at 240 fps and count
-frames (≈ 4 ms each); count triggers over 10 minutes idle, 10 minutes with someone
-typing on the table, and with deliberate table bumps.
-
----
-
-## 4. Recording results
-
-Put numbers in [CHECKLIST.md](CHECKLIST.md). Captured CSV files go in `data/bench/`
-(git-ignored); mention the file name next to the checklist line.
+- Probe tips are enough; no banana-to-Dupont lead is needed. For a female Dupont
+  socket, push a male header pin in and probe the pin.
+- For current, the meter goes in series with the red lead in the mA jack. **Move
+  the lead back to V/Ω afterwards.** Probing a supply with the lead in the mA jack
+  shorts it.
+- Change wiring with the USB cable unplugged.
