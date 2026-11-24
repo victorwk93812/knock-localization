@@ -9,6 +9,7 @@
 //!   RESULT line), the CSV line writer and the final LED idle loop.
 //! - [`scan`]: address probe and bus scan (re-exported from `knock-drivers`).
 //! - [`imu`]: the nine-sensor BMI160 array (bring-up, round-robin FIFO readout).
+//! - [`piezo`]: ADC1 scan of the four piezo inputs at 100 kS/s per channel.
 //!
 //! The sensor drivers live in the HAL-independent `knock-drivers` crate,
 //! re-exported here as [`drivers`].
@@ -25,6 +26,7 @@ use {defmt_rtt as _, panic_probe as _};
 
 pub mod board;
 pub mod bus;
+pub mod piezo;
 pub mod recovery;
 pub mod report;
 

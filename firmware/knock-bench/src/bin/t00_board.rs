@@ -7,6 +7,8 @@
 //!   vector of 0.8–1.2 g.
 //! - I2C1 (Arduino D14/D15) is scanned and the result listed; this part is
 //!   informational, because nothing needs to be wired for T00.
+//! - The piezo inputs A0..A3 are read once (mean of 64 conversions each) and
+//!   listed in counts and mV; informational, the pins may be floating.
 //!
 //! Ends with the RESULT line, then LED2 blinks slowly on PASS, fast on FAIL.
 
@@ -19,7 +21,9 @@ use embedded_hal_async::i2c::I2c;
 use knock_bench::board::{self, Board, Vcp};
 use knock_bench::bus::TimeoutI2c;
 use knock_bench::drivers::lsm6dsl::{self, Lsm6dsl};
+use knock_bench::drivers::piezo::counts_to_mv;
 use knock_bench::drivers::{Accel, stats};
+use knock_bench::piezo;
 use knock_bench::report::{self, Report};
 use knock_bench::{check, fail, note, pass, scan};
 
@@ -28,6 +32,9 @@ const VCP_BANNER: &[u8] =
 
 /// Accepted gravity magnitude from the table-reference accelerometer, in mg.
 const GRAVITY_MG: core::ops::RangeInclusive<i32> = 800..=1200;
+
+/// Conversions averaged per piezo input for the idle-level readout.
+const PIEZO_AVERAGES: u16 = 64;
 
 /// Echo every byte received on the virtual COM port.
 #[embassy_executor::task]
@@ -62,7 +69,7 @@ async fn main(spawner: Spawner) {
         mut vcp,
         mut led2,
         button: _,
-        piezo: _,
+        piezo: mut piezo_inputs,
     } = Board::init();
 
     let mut report = Report::begin("T00", "board");
@@ -148,8 +155,17 @@ async fn main(spawner: Spawner) {
         }
     }
 
-    // TODO(piezo): read the idle level of A0..A3 here (ADC1 and the pins are in
-    // `Board::piezo`); expected about mid-scale once the front end is wired.
+    // Piezo inputs A0..A3: informational only, the pins may be floating.
+    let levels = piezo::read_levels(&mut piezo_inputs, PIEZO_AVERAGES);
+    for (ch, &counts) in levels.iter().enumerate() {
+        note!(
+            "piezo A{}: {} counts = {} mV (mean of {}; about 2048 counts / 1650 mV with the front end wired, anything if floating)",
+            ch,
+            counts,
+            counts_to_mv(counts, piezo::VDDA_MV),
+            PIEZO_AVERAGES
+        );
+    }
 
     let verdict = report.finish();
     report::idle_blink(&mut led2, verdict).await

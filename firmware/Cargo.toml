@@ -17,6 +17,7 @@ embassy-stm32 = { version = "0.6.0", features = [
     "defmt",
     "exti",
     "memory-x",
+    "unstable-pac",
 ] }
 embassy-executor = { version = "0.10.0", features = [
     "platform-cortex-m",
