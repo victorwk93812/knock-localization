@@ -69,89 +69,166 @@ This page gets a new tester from an empty laptop to the first passing test.
 
 ## 2. Installing the tools
 
-Written for Linux. Where macOS or Windows differ it is noted, but those notes are
-untested.
+Four things are needed: **git**, **Rust** (with the STM32 target), **probe-rs**
+(flashing and logs) and **uv** (Python tools). Follow the column for your system,
+then do the common steps in §2.4–§2.6.
 
-### 2.1 Get the repository
+> Developed and checked on Linux only. The Windows and macOS steps follow the
+> tools' official instructions but have not been run by us yet. If a step fails,
+> note the exact command and error message.
 
-```sh
-git clone https://github.com/victorwk93812/knock-localization.git
-cd knock-localization
-```
+### 2.1 Windows 10 / 11
 
-### 2.2 Rust
+Use **PowerShell** for everything (not WSL: passing the USB probe into WSL is
+extra work and not covered here).
 
-1. Install `rustup` from <https://rustup.rs> (or your distribution's `rustup`
-   package). Do not install a distribution `rust` or `cargo` package beside it.
-2. In the repository:
+1. **Git:** `winget install --id Git.Git -e`, or the installer from
+   <https://git-scm.com>.
+2. **C++ build tools (needed by Rust).** Rust on Windows needs Microsoft's linker
+   and the Windows SDK, even though our program is built for the STM32: parts of
+   the build run on the PC. Either
+   - let the Rust installer in the next step install them when it offers to, or
+   - install "Build Tools for Visual Studio 2022" from
+     <https://visualstudio.microsoft.com/downloads/> and select the workload
+     **Desktop development with C++**.
+3. **Rust:** download and run `rustup-init.exe` from <https://rustup.rs>
+   (64-bit: <https://win.rustup.rs/x86_64>; ARM64 PC:
+   <https://win.rustup.rs/aarch64>). Accept the defaults. **Open a new PowerShell
+   window afterwards** so `cargo` is on the PATH.
+4. **probe-rs:**
 
-   ```sh
-   rustup toolchain install
+   ```powershell
+   irm https://github.com/probe-rs/probe-rs/releases/latest/download/probe-rs-tools-installer.ps1 | iex
    ```
 
-   This reads `rust-toolchain.toml` and installs exactly Rust 1.99.1 together with
-   the `thumbv7em-none-eabihf` target (the compiler back end for the STM32's
-   Cortex-M4F). Nothing else needs to be chosen; never edit that file.
-3. Check: `cd firmware && cargo build --release --bins` finishes without errors.
-   The first build downloads the dependencies and takes a few minutes.
+   If PowerShell refuses to run the script, start it with
+   `powershell -ExecutionPolicy ByPass` and repeat.
+5. **ST-LINK driver.** probe-rs needs ST's official USB driver on Windows:
+   download **STSW-LINK009** from st.com (free account) and install it, then
+   replug the board. Do **not** use Zadig to replace the driver.
+6. **uv:**
 
-No separate ARM GCC, OpenOCD or ST software is needed.
+   ```powershell
+   powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+   ```
 
-### 2.3 probe-rs (flashing and logs)
+   (or `winget install --id=astral-sh.uv -e`). Open a new PowerShell window.
+7. **Serial port name:** open Device Manager → Ports (COM & LPT) with the board
+   plugged in. "STMicroelectronics STLink Virtual COM Port (COM*n*)" gives the
+   name, for example `COM5`. Use that wherever the pages say `/dev/ttyACM0`.
 
-`probe-rs` talks to the ST-LINK on the board: it flashes the program and prints
-its log. The project is developed with **probe-rs 0.32**.
+Differences to keep in mind on Windows:
 
-1. Install it by one of the methods on
-   <https://probe.rs/docs/getting-started/installation/> (prebuilt installer, or
-   `cargo install probe-rs-tools --locked`).
-2. **Linux only: allow access without `sudo`.** Follow "udev rules" on
-   <https://probe.rs/docs/getting-started/probe-setup/>: copy `69-probe-rs.rules`
-   to `/etc/udev/rules.d/`, then
+- Paths in the commands work as written (`../data/bench` is fine in PowerShell).
+- Where a command is shown over several lines ending in `\`, type it on one line
+  (or end the lines with a backtick `` ` ``).
+- In the t00 echo check, quit with Ctrl-Z then Enter (not Ctrl-D).
+- Some antivirus tools slow the first build a lot; it is not hung.
+
+### 2.2 macOS (Intel or Apple Silicon)
+
+Use Terminal.
+
+1. **Command line tools (git and the linker Rust needs):**
+
+   ```sh
+   xcode-select --install
+   ```
+2. **Rust:**
+
+   ```sh
+   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+   ```
+
+   Accept the defaults, then open a new terminal window.
+3. **probe-rs:**
+
+   ```sh
+   curl --proto '=https' --tlsv1.2 -LsSf https://github.com/probe-rs/probe-rs/releases/latest/download/probe-rs-tools-installer.sh | sh
+   ```
+
+   (or, with Homebrew: `brew tap probe-rs/probe-rs && brew install probe-rs`).
+   No driver is needed for the ST-LINK.
+4. **uv:**
+
+   ```sh
+   curl -LsSf https://astral.sh/uv/install.sh | sh
+   ```
+
+   (or `brew install uv`). Open a new terminal window.
+5. **Serial port name:** with the board plugged in, `ls /dev/cu.usbmodem*`. Use
+   that name (for example `/dev/cu.usbmodem1103`) wherever the pages say
+   `/dev/ttyACM0`. Use the `cu.` name, not the `tty.` one.
+
+### 2.3 Linux
+
+1. **Git and build basics** from your distribution (`git`, a C compiler/linker
+   such as `gcc`). On Debian/Ubuntu also `sudo apt install -y pkg-config
+   libudev-dev`.
+2. **Rust:**
+
+   ```sh
+   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+   ```
+
+   (or your distribution's `rustup` package). Do not install a distribution
+   `rust` or `cargo` package beside it.
+3. **probe-rs:**
+
+   ```sh
+   curl --proto '=https' --tlsv1.2 -LsSf https://github.com/probe-rs/probe-rs/releases/latest/download/probe-rs-tools-installer.sh | sh
+   ```
+4. **Probe access without `sudo`:** download `69-probe-rs.rules` from
+   <https://probe.rs/docs/getting-started/probe-setup/>, copy it to
+   `/etc/udev/rules.d/`, then
 
    ```sh
    sudo udevadm control --reload && sudo udevadm trigger
    ```
 
    and replug the board.
-3. Check, with the board plugged in:
+5. **uv:** `curl -LsSf https://astral.sh/uv/install.sh | sh`
+6. **Serial port:** `/dev/ttyACM0`. Your user must be in the group that owns it:
+   `ls -l /dev/ttyACM0` shows the group (`uucp` on Arch, `dialout` on
+   Debian/Ubuntu). `sudo usermod -aG <group> $USER`, then log out and in.
 
-   ```sh
-   probe-rs list
-   ```
+### 2.4 Get the repository and the pinned toolchain (all systems)
 
-   must show one `STLink V2-1` probe.
+```sh
+git clone https://github.com/victorwk93812/knock-localization.git
+cd knock-localization
+rustup toolchain install
+```
 
-Windows: if the probe is not listed, install ST's ST-LINK USB driver.
+The last command reads `rust-toolchain.toml` and installs exactly Rust 1.99.1
+together with the `thumbv7em-none-eabihf` target (the compiler back end for the
+STM32's Cortex-M4F). Never edit that file. If your rustup is old and asks for a
+toolchain name, run `rustup update` first, or simply continue: the first `cargo`
+command in the repository installs the pinned toolchain by itself.
 
-### 2.4 Serial port
+No ARM GCC, OpenOCD or STM32Cube software is needed.
 
-The same USB cable also provides a serial port (the "virtual COM port"), used for
-the recorded data.
+### 2.5 Check the installation (all systems)
 
-| System | Port name | Permission |
+| Check | Command | Expect |
 |---|---|---|
-| Linux | `/dev/ttyACM0` | Your user must be in the group that owns the port: `ls -l /dev/ttyACM0` shows it (`uucp` on Arch, `dialout` on Debian/Ubuntu). `sudo usermod -aG <group> $USER`, then log out and in |
-| macOS | `/dev/cu.usbmodem…` | none |
-| Windows | `COM3` or similar (Device Manager) | none |
+| Rust | `cargo --version` inside the repository | `cargo 1.99.1` |
+| Firmware builds | `cd firmware` then `cargo build --release --bins` | `Finished`, no errors. The first build downloads dependencies and takes a few minutes |
+| probe-rs | `probe-rs --version` | 0.32 or newer |
+| Probe | board plugged in, `probe-rs list` | one `STLink V2-1` probe |
+| Python tools | `cd host`, `uv sync`, then `uv run bench/capture.py --help` | the option list. uv downloads Python 3.11+ by itself if needed |
+| Script tests | in `host`: `uv run pytest` | all passed |
 
-The pages use `/dev/ttyACM0`; substitute yours.
+If the probe is not listed:
 
-### 2.5 Python tools
-
-The analysis script needs Python 3.11 or newer with pyserial, numpy and
-matplotlib. [uv](https://docs.astral.sh/uv/) installs all of that into a private
-environment:
-
-1. Install uv (<https://docs.astral.sh/uv/getting-started/installation/>).
-2. In the repository:
-
-   ```sh
-   cd host
-   uv sync
-   ```
-3. Check: `uv run bench/capture.py --help` prints the options, and
-   `uv run pytest` reports all tests passed.
+- **Any system:** try another USB cable (many are charge-only) and the board's
+  **ST-LINK** USB socket; close other programs using the probe (STM32CubeIDE,
+  another terminal still running `cargo run`).
+- **Windows:** the ST driver from §2.1 step 5 is missing.
+- **Linux:** the udev rules from §2.3 step 4 are missing.
+- **Probe listed but flashing fails with a firmware-version message:** the
+  ST-LINK's own firmware is older than 2.26. Update it with ST's updater
+  (STSW-LINK007).
 
 ### 2.6 First contact
 
@@ -163,7 +240,13 @@ cargo run --release --bin t00_board
 ```
 
 Details and expected output: [tests/t00_board.md](tests/t00_board.md). If this
-passes, the installation is complete.
+passes and the serial echo check on that page works, the installation is
+complete.
+
+Only for people changing the driver code: the unit tests in `firmware/README.md`
+are written with `--target x86_64-unknown-linux-gnu`. On another system use your
+own host target, shown by `rustc -vV` in the `host:` line (for example
+`aarch64-apple-darwin` or `x86_64-pc-windows-msvc`).
 
 ---
 

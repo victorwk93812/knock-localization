@@ -9,7 +9,7 @@ Results go in [CHECKLIST.md](CHECKLIST.md), milestone M1.
 | Item | Test | Pass |
 |---|---|---|
 | Multimeter | Continuity mode, touch the probes together | Beep, < 0.5 Ω |
-| USB cable | Plug in the board, `lsusb` | `0483:374b ST-LINK/V2.1`. Only an LED and no device = charge-only cable |
+| USB cable | Plug in the board. Linux: `lsusb`. Windows: Device Manager. macOS: System Information → USB | An ST-LINK device appears (`0483:374b` in `lsusb`). Only an LED and no device = charge-only cable |
 | Board power | DC volts between the header pins 3V3 and GND, then 5V and GND | 3.25–3.35 V, about 5 V |
 
 ## 2. Passive parts

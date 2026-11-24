@@ -25,7 +25,8 @@ soldered, nothing wired. Lay the board flat and still on the table.
    ```
 
    Type a line and press Enter, a few times. Each line must come back unchanged
-   (`OK: sent ..., received ...`; `MISMATCH` is a failure). Ctrl-D quits. The reset banner is only shown if
+   (`OK: sent ..., received ...`; `MISMATCH` is a failure). Ctrl-D quits (Windows: Ctrl-Z, then Enter). On Windows or macOS use your own port name
+   in place of `/dev/ttyACM0` ([../README.md](../README.md) §2). The reset banner is only shown if
    the script was already listening when the board restarted; that is optional.
 
 ## What the log shows
@@ -54,9 +55,9 @@ soldered, nothing wired. Lay the board flat and still on the table.
 
 | Symptom | Likely cause |
 |---|---|
-| `probe-rs` finds no probe | Charge-only cable; wrong USB socket; udev rules missing (Linux); another program holds the probe |
+| `probe-rs` finds no probe | Charge-only cable; wrong USB socket; udev rules missing (Linux); ST driver missing (Windows); another program holds the probe |
 | Flashing works, no log lines | Old probe-rs; update to 0.32 |
 | LSM6DSL does not answer | Board fault, or a firmware bug: report the log |
 | |a| far from 1 g | Board was moving; otherwise the sensitivity constant is wrong (it is unverified, see [../STATUS.md](../STATUS.md)): report the value |
-| `Permission denied` on the port | Serial group, [../README.md](../README.md) §2.4 |
+| `Permission denied` on the port | Linux serial group, [../README.md](../README.md) §2.3 |
 | Echo garbled or bytes missing | Note it. Try `--baud 115200` only to confirm the port works; the firmware itself still talks at 921 600, so a mismatch gives garbage. Report it and the baud rate gets lowered in the firmware |
