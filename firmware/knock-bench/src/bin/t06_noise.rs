@@ -8,11 +8,17 @@
 //! 24 000 per sensor); the LSM6DSL is read once per round (50 samples/s of its
 //! 416 Hz output, about 3000 samples).
 //!
-//! For each sensor the log shows, in mg: the mean and the RMS noise (standard
-//! deviation) of each axis, the mean magnitude |a| (≈ 1000 at rest), the RMS
-//! of the dynamic magnitude |a − mean| and five times that as the suggested
-//! trigger threshold. A sensor whose dynamic RMS is more than 3× the median of
-//! the BMI160s is pointed out (loose mount, cable touching the plate?).
+//! For each sensor the log shows the number of samples and, in mg: the mean
+//! and the RMS noise (standard deviation) of each axis, the mean magnitude |a|
+//! (≈ 1000 at rest), the RMS of the dynamic magnitude |a − mean| and five
+//! times that.
+//!
+//! The suggested trigger threshold is five times the **median** dynamic RMS
+//! of the BMI160s that delivered samples, so it describes the typical sensor
+//! and one badly mounted module does not inflate it. The noisiest sensor is
+//! named as well, with the threshold it alone would need, and a sensor whose
+//! dynamic RMS is more than 3× the median is pointed out (loose mount, cable
+//! touching the plate?).
 //!
 //! CSV on the virtual COM port (921600 8N1), one row per sensor and axis:
 //!
@@ -57,7 +63,7 @@ const DURATION: Duration = if cfg!(feature = "quick") {
 } else {
     Duration::from_secs(60)
 };
-/// Suggested trigger threshold as a multiple of the noise RMS.
+/// Suggested trigger threshold as a multiple of the median noise RMS.
 const THRESHOLD_SIGMAS: f32 = 5.0;
 /// A sensor noisier than this multiple of the median is pointed out.
 const NOISY_FACTOR: f32 = 3.0;
@@ -282,13 +288,27 @@ async fn main(_spawner: Spawner) {
     );
 
     let mut values: Vec<f32, SENSORS> = dynamic_mg.iter().flatten().copied().collect();
-    if let Some(median) = running::median(&mut values) {
-        let loudest = values.last().copied().unwrap_or(median);
+    let noisiest = dynamic_mg
+        .iter()
+        .enumerate()
+        .filter_map(|(k, d)| d.map(|d| (k, d)))
+        .max_by(|a, b| a.1.total_cmp(&b.1));
+    if let (Some(median), Some((noisy_k, noisy_mg))) = (running::median(&mut values), noisiest) {
         note!(
-            "BMI160 dynamic RMS: median {:.2} mg, largest {:.2} mg; suggested trigger threshold (5 sigma of the noisiest) {:.1} mg",
+            "BMI160 dynamic RMS: median {:.2} mg over {} sensors; noisiest I{} at {:.2} mg",
             median,
-            loudest,
-            THRESHOLD_SIGMAS * loudest
+            values.len(),
+            noisy_k,
+            noisy_mg
+        );
+        note!(
+            "suggested trigger threshold: {:.1} mg (5 x the median dynamic RMS)",
+            THRESHOLD_SIGMAS * median
+        );
+        note!(
+            "for comparison, 5 x the noisiest sensor (I{}) would be {:.1} mg",
+            noisy_k,
+            THRESHOLD_SIGMAS * noisy_mg
         );
         for (k, d) in dynamic_mg.iter().enumerate() {
             if let Some(d) = d

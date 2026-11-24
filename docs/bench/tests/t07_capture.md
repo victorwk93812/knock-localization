@@ -14,8 +14,9 @@ captured knock. The blue button ends the run.
 
 ## Rules for every run
 
-1. **Start the capture script first, then the test.** The data header is sent
-   once at start-up; a script started later saves nothing.
+1. **Start the capture script first, then the test.** Then every knock is in the
+   file. The data header is repeated before every knock, so a script started
+   later still records the knocks that follow, but not the earlier ones.
 2. **End every run with the blue button.** Only then is the file complete.
 3. **One run = one file.** For the next run, start the script again, then
    `cargo run` again.
@@ -156,7 +157,9 @@ The nine gains c_i, the three symmetry numbers, the largest CV, the file names.
 
 | Symptom | Likely cause |
 |---|---|
-| Script saves nothing | It was started after the test |
+| The first knocks are missing from the file | The script was started after the test. It records from the first knock that begins after it attached. Start it first |
+| Script saves nothing | No knock was captured after the script attached (see the next row), or the wrong serial port |
+| A peak shows as `-` (`nan` in the file) | That sensor was absent for that knock: no data from it. It is left out of the statistics, not counted as 0 |
 | No knock is captured | Knocks below 300 mg at every sensor. Knock closer or harder; check t06 for dead sensors |
 | Knocks captured without knocking | Trigger too low for this set-up, or a cable slapping the plate. Compare with the t06 threshold |
 | One sensor always absent | Its cable. Run t02 |

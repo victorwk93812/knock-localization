@@ -299,10 +299,11 @@ cargo run --release --bin t07_capture
 ```
 
 **Start the capture script first.** Flashing restarts the board, and the data
-header is sent right after the restart; a script started later may save nothing
-(always true for t07, see [STATUS.md](STATUS.md)). The script saves each run as
-`<test>-<timestamp>.csv`, prints a summary, and writes plots as PNG beside it. Stop
-it with Ctrl-C. A saved file can be analysed again any time:
+header is sent right after the restart; a script started later may save nothing.
+The knock tests (t07, t09, t10) repeat the header before every knock, so there a
+late script only misses the knocks before it (see [STATUS.md](STATUS.md)). The
+script saves each run as `<test>-<timestamp>.csv`, prints a summary, and writes
+plots as PNG beside it. Stop it with Ctrl-C. A saved file can be analysed again any time:
 
 ```sh
 uv run bench/capture.py --replay ../data/bench/<file>.csv

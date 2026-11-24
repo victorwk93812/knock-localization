@@ -99,10 +99,12 @@ def test_t06_summary_stream():
     assert d["missing"] == [7]
     assert sorted(d["dynamic_rms"]) == [0, 1, 2, 3, 4, 5, 6, 8]
     assert d["noisy"] == [3] and d["noisiest"] == 3
-    assert d["threshold"] == pytest.approx(5 * 10 * make_data.T06_RMS_MG[3])
     # The median is over the BMI160s only (the table reference would lower it).
     bmi = [make_data.T06_RMS_MG[s] * (10 if s == 3 else 1) for s in (0, 1, 2, 3, 4, 5, 6, 8)]
     assert d["median"] == pytest.approx(float(np.median(bmi)))
+    # The threshold follows the typical sensor, not the outlier I3.
+    assert d["threshold"] == pytest.approx(5 * float(np.median(bmi)))
+    assert d["threshold_noisiest"] == pytest.approx(5 * 10 * make_data.T06_RMS_MG[3])
     assert d["table_reference"] == pytest.approx(make_data.T06_TABLE_RMS_MG)
     text = analysis.text
     for needle in (
@@ -111,7 +113,9 @@ def test_t06_summary_stream():
         "I3 (23.00 mg)",
         "table reference (LSM6DSL, not part of the median): dynamic RMS 0.90 mg",
         "5sigma",
-        "suggested trigger threshold: 115.0 mg",
+        "over 8 sensor(s); noisiest I3 at 23.00 mg",
+        "suggested trigger threshold: 12.2 mg (5 x the median dynamic RMS)",
+        "for comparison, 5 x the noisiest BMI160 (I3) would be 115.0 mg",
     ):
         assert needle in text, needle
     # The table reference has its own row in the table.
@@ -125,7 +129,8 @@ def test_t06_clean_run_and_no_table_reference():
     analysis = capture.analyze(capture.parse_text(text)[0], capture.Options())  # no '# end'
     assert analysis.data["missing"] == [] and analysis.data["noisy"] == []
     assert analysis.data["median"] == pytest.approx(6.0)
-    assert analysis.data["threshold"] == pytest.approx(50.0)
+    assert analysis.data["threshold"] == pytest.approx(30.0)  # 5 x the median
+    assert analysis.data["threshold_noisiest"] == pytest.approx(50.0)  # I8 at 10 mg
     assert "no BMI160 above" in analysis.text
     assert "table reference (sensor 9): no rows" in analysis.text
     assert "MISSING" not in analysis.text
@@ -152,17 +157,101 @@ def test_t06_rejects_other_layouts_and_bad_cells():
 
 def test_t07_sample_matches_the_firmware_layout():
     lines = (DATA / "t07_capture.csv").read_text().splitlines()
-    assert lines[0] == "# t07_capture,knock,sensor,sample,x_mg,y_mg,z_mg"
-    assert sum(line.startswith("# t07_capture") for line in lines) == 1  # header once
+    header = "# t07_capture,knock,sensor,sample,x_mg,y_mg,z_mg"
+    # The header at start-up, then again before each of the three knocks.
+    assert lines[0] == lines[1] == header
+    assert sum(line == header for line in lines) == 4
+    for k in (2, 3):
+        assert lines[lines.index(f"{k},0,-4,12,-7,1000") - 1] == header
     assert lines[-1] == "# end"
-    run = capture.parse_file(DATA / "t07_capture.csv")[0]
+    runs = capture.parse_file(DATA / "t07_capture.csv")
+    assert len(runs) == 1  # the repeats do not start new runs
+    run = runs[0]
+    assert run.ended and run.bad_lines == 0
     data = run.array()
     assert np.array_equal(data, np.rint(data))  # integers only
     assert sorted(set(data[:, 0].astype(int).tolist())) == [1, 2, 3]  # numbered from 1
     assert sorted(set(data[:, 2].astype(int).tolist())) == list(range(-4, 16))
     assert len(data) == 20 * (9 + 8 + 9)  # sensor 5 has no rows in knock 2
     notes = run.knock_notes("peaks")
-    assert all(len(v) == 9 for v in notes.values()) and notes[2][5] == 0
+    assert all(len(v) == 9 for v in notes.values())
+    assert "# knock 2 peaks,2012,592,151,159,112,nan,339,947,349" in lines
+    assert math.isnan(notes[2][5])  # absent = nan, not 0
+
+
+def test_t07_old_format_file_still_loads():
+    # First firmware version: the header once, 0 for an absent sensor.
+    lines = (DATA / "t07_capture_old.csv").read_text().splitlines()
+    assert sum(line.startswith("# t07_capture") for line in lines) == 1
+    assert "# knock 2 peaks,2012,592,151,159,112,0,339,947,349" in lines
+    assert not any("nan" in line for line in lines)
+    old = capture.parse_file(DATA / "t07_capture_old.csv")
+    new = capture.parse_file(DATA / "t07_capture.csv")
+    assert len(old) == 1 and old[0].ended
+    assert old[0].rows == new[0].rows
+    a, b = capture.knock_peaks(old[0]), capture.knock_peaks(new[0])
+    assert a.absent == b.absent == {2: [5]} and a.incomplete == b.incomplete == []
+    for k in (1, 2, 3):
+        assert np.array_equal(a.peaks[k], b.peaks[k], equal_nan=True)
+    opts = capture.Options(mode="gain", sensor=5)
+    assert capture.analyze(old[0], opts).text == capture.analyze(new[0], opts).text
+
+
+def test_t07_nan_peak_is_absent_even_with_rows():
+    # `nan` is never a measurement; a 0 with rows still is (see below).
+    text = "# t07_capture,knock,sensor,sample,x_mg,y_mg,z_mg\n"
+    for s in (0, 1):
+        text += "".join(f"1,{s},{i},0,0,1000\n" for i in range(-4, 16))
+    text += "# knock 1 peaks,0,nan,NaN,nan,nan,nan,nan,nan,nan\n# end\n"
+    found = capture.knock_peaks(capture.parse_text(text)[0])
+    assert found.peaks[1][0] == 0.0
+    assert found.absent == {1: [1, 2, 3, 4, 5, 6, 7, 8]}
+    assert "peaks [mg] 0 - - " in capture.knock_summary(capture.parse_text(text)[0], 1, capture.Options())
+
+
+def test_t07_recording_that_starts_in_mid_run(tmp_path):
+    # The script was attached while knock 1 was being sent: the start-up
+    # header and knock 1's header are missed, knocks 2 and 3 are still saved.
+    lines = (DATA / "t07_capture.csv").read_text(encoding="utf-8").splitlines()
+    header = lines[0]
+    second = [i for i, line in enumerate(lines) if line == header][2]  # knock 2's header
+    late = ["20,-7,1000"] + lines[40:]  # starts in the middle of a row of knock 1
+    out = io.StringIO()
+    session = capture.LiveSession(tmp_path, capture.Options(), plot=False, out=out, timestamp=lambda: "TS")
+    for line in late:
+        session.feed_line(line + "\r\n")
+    saved = tmp_path / "t07_capture-TS.csv"
+    assert session.saved == [saved]  # one run, one file
+    assert saved.read_text(encoding="utf-8").splitlines() == lines[second:]
+    run = capture.parse_file(saved)[0]
+    assert run.ended and run.bad_lines == 0
+    found = capture.knock_peaks(run)
+    assert list(found.peaks) == [2, 3] and found.incomplete == []
+    assert found.absent == {2: [5]}
+    printed = out.getvalue()
+    assert "t07_capture knock 2: peaks [mg]" in printed and "absent: I5" in printed
+    assert "t07_capture knock 3: peaks [mg]" in printed
+    assert "knock 1" not in printed
+    assert "2 knock(s)" in printed
+
+    # The old firmware sent the header once: the same late start saves nothing.
+    old = (DATA / "t07_capture_old.csv").read_text(encoding="utf-8").splitlines()
+    session = capture.LiveSession(tmp_path / "old", capture.Options(), plot=False, out=io.StringIO())
+    for line in old[40:]:
+        session.feed_line(line)
+    assert session.saved == []
+
+
+def test_t07_live_session_keeps_repeated_headers_in_one_file(tmp_path):
+    text = (DATA / "t07_capture.csv").read_text(encoding="utf-8")
+    out = io.StringIO()
+    session = capture.LiveSession(tmp_path, capture.Options(), plot=False, out=out, timestamp=lambda: "TS")
+    for line in text.splitlines():
+        session.feed_line(line + "\r\n")
+    assert session.saved == [tmp_path / "t07_capture-TS.csv"]
+    assert session.saved[0].read_text(encoding="utf-8") == text  # verbatim, headers included
+    assert out.getvalue().count("recording t07_capture") == 1
+    assert "3 knock(s)" in out.getvalue()
 
 
 def test_t07_absent_sensor_is_not_a_measurement():
@@ -193,7 +282,7 @@ def test_t07_truncated_file_without_end():
     assert g["knocks"] == 2 and g["loudest"] == 2 and g["absent"] == [6]
     assert math.isnan(g["means"][6])
     for needle in (
-        "absent in every knock (no rows, peak 0): I6",
+        "absent in every knock (no rows, no peak): I6",
         "incomplete knock(s) left out",
         "max at",
     ):

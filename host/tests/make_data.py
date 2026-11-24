@@ -58,11 +58,16 @@ def t07_capture(
     strength_mg: float = 2000.0,
     absent: dict[int, tuple[int, ...]] | None = None,
     truncate_rows: int | None = None,
+    old_format: bool = False,
 ) -> str:
     """Knocks next to sensor `near` (None: at the plate centre), in the
-    firmware's layout: one header, knocks numbered from 1, integer values,
-    samples -4..15 per present sensor, gravity included, and after each knock
-    `# knock <n> peaks,<A0>..<A8>` with 0 for an absent sensor.
+    firmware's layout: the header once at start-up and again before every
+    knock, knocks numbered from 1, integer values, samples -4..15 per present
+    sensor, gravity included, and after each knock
+    `# knock <n> peaks,<A0>..<A8>` with `nan` for an absent sensor.
+
+    `old_format` gives the layout of the first firmware version: the header
+    only once at start-up, and 0 instead of `nan` for an absent sensor.
 
     Sensor i responds with strength / TRUE_GAINS[i] * falloff(distance), so
     that the calibrated responses are equal for equal distances.
@@ -73,15 +78,18 @@ def t07_capture(
     rng = np.random.default_rng(seed + (near if near is not None else 99))
     pos = SENSOR_POS_CM[near] if near is not None else np.array([0.0, 0.0])
     absent = absent or {}
-    lines = ["# t07_capture,knock,sensor,sample,x_mg,y_mg,z_mg"]
+    header = "# t07_capture,knock,sensor,sample,x_mg,y_mg,z_mg"
+    lines = [header]
     for k in range(1, knocks + 1):
+        if not old_format:
+            lines.append(header)
         strength = strength_mg * (1.0 + 0.02 * rng.normal())
         gone = set(absent.get(0, ())) | set(absent.get(k, ()))
         peaks = []
         rows = []
         for s in range(9):
             if s in gone:
-                peaks.append(0)
+                peaks.append(0 if old_format else "nan")
                 continue
             d = float(np.linalg.norm(SENSOR_POS_CM[s] - pos))
             amp = round(strength / TRUE_GAINS[s] / (1.0 + (d / 6.0) ** 2))
@@ -180,6 +188,10 @@ SAMPLES = {
     "t07_capture.csv": lambda: t07_capture(near=0, knocks=3, absent={2: (5,)}),
     "t07_capture_truncated.csv": lambda: t07_capture(
         near=2, knocks=3, absent={0: (6,)}, truncate_rows=47
+    ),
+    # The first firmware version's layout; recordings made with it must still load.
+    "t07_capture_old.csv": lambda: t07_capture(
+        near=0, knocks=3, absent={2: (5,)}, old_format=True
     ),
     "t09_piezo_dc.csv": lambda: piezo_stream("t09_piezo_dc", knocks=2, clip_knock=2, seed=9),
     "t10_piezo_time.csv": lambda: piezo_stream("t10_piezo_time", knocks=3, fw_onsets=(1, 2)),
